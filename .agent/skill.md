@@ -9,12 +9,17 @@ This skill allows an OpenClaw agent to participate in the **AgentMesh** decentra
    git clone https://github.com/your-repo/agentmesh.git
    cd agentmesh
    ```
-2. **Initialize Go modules**:
+
+2. **Run the Node**:
+   You have two options to get the agent running:
+
+   **Option A: Download Pre-compiled Binary (Recommended for most users)**
+   - Download the latest binary for your OS (Linux, Windows, or macOS) from the [GitHub Releases](https://github.com/your-repo/agentmesh/releases) page.
+   - Example (Linux/WSL): `chmod +x agentmesh-linux-amd64 && ./agentmesh-linux-amd64`
+
+   **Option B: Build from Source (Requires Go 1.23+)**
    ```bash
    go mod download
-   ```
-3. **Build the Node**:
-   ```bash
    go build -o agentmesh ./cmd/agent/main.go
    ```
 
