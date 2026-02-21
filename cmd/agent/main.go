@@ -16,12 +16,21 @@ func main() {
 	dbPath := flag.String("db", "agent_metadata.db", "Path to metadata database")
 	workspace := flag.String("workspace", "./workspace", "Path to OpenClaw workspace")
 	listenAddr := flag.String("listen", "/ip4/0.0.0.0/tcp/0", "libp2p listen address")
-	rpcURL := flag.String("rpc", "https://sepolia.base.org", "Ethereum RPC URL")
-	escrowAddr := flag.String("escrow", "0x591ee5158c94d736ce9bf544bc03247d14904061", "TaskEscrow contract address")
-	marketAddr := flag.String("market", "0x051509a30a62b1ea250eef5ad924d0690a4d20e6", "KnowledgeMarket contract address")
-	identAddr := flag.String("identity", "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432", "ERC-8004 IdentityRegistry address")
+	rpcURL := flag.String("rpc", "", "Ethereum RPC URL (e.g., Alchemy/Infura)")
+	escrowAddr := flag.String("escrow", "", "TaskEscrow contract address")
+	marketAddr := flag.String("market", "", "KnowledgeMarket contract address")
+	identAddr := flag.String("identity", "", "ERC-8004 IdentityRegistry address")
+	reputAddr := flag.String("reputation", "", "ERC-8004 ReputationRegistry address")
+	bootstrapNodes := flag.String("bootstrap", "", "Comma-separated list of bootstrap multiaddrs")
 
 	flag.Parse()
+
+	// Validation
+	if *rpcURL == "" || *escrowAddr == "" || *marketAddr == "" || *identAddr == "" {
+		fmt.Println("Error: Missing required flags (-rpc, -escrow, -market, -identity)")
+		flag.Usage()
+		os.Exit(1)
+	}
 
 	fmt.Printf("Starting AgentMesh Node...\n")
 	fmt.Printf("Database: %s\n", *dbPath)
@@ -35,8 +44,8 @@ func main() {
 		log.Fatalf("Failed to initialize node: %v", err)
 	}
 
-	// Setup ERC8004 Client (Mock/Placeholder addresses for Reputation/Validation)
-	node.ERCClient = agent.NewERC8004Client(*rpcURL, *identAddr, "0x0000000000000000000000000000000000000000", "0x0000000000000000000000000000000000000000")
+	// Setup ERC8004 Client (Addresses provided via CLI)
+	node.ERCClient = agent.NewERC8004Client(*rpcURL, *identAddr, *reputAddr, "0x0000000000000000000000000000000000000000")
 
 	// Setup Watcher
 	watcher, err := agent.NewEventWatcher(*rpcURL, *escrowAddr, *marketAddr, func(e agent.TaskCreatedEvent) {
@@ -48,10 +57,12 @@ func main() {
 		if node.ERCClient != nil {
 			agentId, err := node.ERCClient.GetAgentIdByWallet(q.Requester)
 			if err == nil {
-				peerId, err := node.ERCClient.GetMetadata(agentId, "peerId")
+				peerId, err := node.ERCClient.ResolvePeerId(agentId)
 				if err == nil && peerId != "" {
 					fmt.Printf("[Discovery] Resolved PeerID for %s: %s\n", q.Requester.Hex(), peerId)
 					// Trigger P2P delivery here...
+				} else {
+					fmt.Printf("[Discovery] Could not resolve PeerID for %s: %v\n", q.Requester.Hex(), err)
 				}
 			}
 		}
@@ -61,7 +72,7 @@ func main() {
 		go node.Watcher.Start(context.Background())
 	}
 
-	if err := node.Start(*listenAddr); err != nil {
+	if err := node.Start(*listenAddr, *bootstrapNodes); err != nil {
 		log.Fatalf("Failed to start node: %v", err)
 	}
 

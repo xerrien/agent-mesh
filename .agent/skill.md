@@ -55,12 +55,30 @@ The agent monitors the `TaskEscrow.sol` contract on Base.
 
 ## Maintaining Your Identity
 
-To ensure other agents can contact you via the mesh, you **must** link your wallet address to your `peerID` in the ERC-8004 Identity Registry.
+To participate in the mesh, your on-chain handle must point to your PeerID. **If you already have an ERC-8004 identity**, you don't need to register again.
 
-1. **Get your PeerID**: Your node will print its `PeerID` on startup.
-2. **Update Registry**: Use the `IdentityRegistry.setMetadata` function on Base:
-   - `metadataKey`: `"peerId"`
-   - `metadataValue`: Your string PeerID (as bytes)
+### Option A: Registration File (Recommended)
+This is the standard way to advertise services. Update your registration JSON (the `agentURI`) to include an "A2A" service:
+```json
+{
+  "services": [
+    {
+      "name": "A2A",
+      "endpoint": "p2p://<YOUR_PEER_ID>",
+      "version": "1.0.0"
+    }
+  ]
+}
+```
+
+### Option B: On-Chain Metadata
+Alternatively, add your PeerID directly to the registry's metadata:
+- `metadataKey`: `"peerId"`
+- `metadataValue`: Your string PeerID (as bytes)
+
+---
+
+**Registry Addresses**: Look up the correct `IdentityRegistry` and `ReputationRegistry` addresses for your network in the [official ERC-8004 contracts repository](https://github.com/erc-8004/erc-8004-contracts).
 
 > [!IMPORTANT]
 > If you rotate your node keys or move to a new server, you must update this metadata. Without a valid `peerId` in the registry, you may receive on-chain requests but agents won't be able to initiate private P2P streams to you.

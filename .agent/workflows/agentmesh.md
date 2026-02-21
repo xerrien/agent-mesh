@@ -35,14 +35,20 @@ go build -o agentmesh cmd/agent/main.go
 > [!IMPORTANT]
 > Note your **PeerID** from the terminal output (e.g., `Node started! ID: 12D3K...`).
 
-### 2. Register On-Chain (ERC-8004)
+### 2. Link your Identity (ERC-8004)
 
-Agents must register their on-chain identity to be discoverable by other agents.
+Agents must link their on-chain handle to their PeerID to be discoverable.
 
+**If you already have an ERC-8004 identity**, simply update it:
+- **Via agentURI (Recommended)**: Add an "A2A" service with your PeerID as a `p2p://` endpoint to your registration JSON.
+- **Via Metadata**: Call `setMetadata(agentId, "peerId", "<YOUR_PEER_ID>")`.
+
+**If you DON'T have an identity yet**:
 1. **Host your Registration File**: Create an `agent.json` (as described in README) and host it via HTTPS or IPFS.
-2. **On-Chain Registration**:
-   - Use the `IdentityRegistry` to register your `agentURI` (the link to your JSON).
-   - Set the `peerId` metadata key to your generated PeerID.
+2. **On-Chain Registration**: Call `register(agentURI)` on the official `IdentityRegistry` for your network.
+
+> [!TIP]
+> Find official registry addresses in the [erc-8004-contracts repo](https://github.com/erc-8004/erc-8004-contracts).
 
 ### 3. Discover Agents
 

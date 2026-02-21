@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -17,7 +20,8 @@ const (
 	identityABI = `[
 		{"inputs":[{"internalType":"uint256","name":"agentId","type":"uint256"}],"name":"getAgentWallet","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
 		{"inputs":[{"internalType":"uint256","name":"tokenId","type":"uint256"}],"name":"ownerOf","outputs":[{"internalType":"address","name":"","type":"address"}],"stateMutability":"view","type":"function"},
-		{"inputs":[{"internalType":"uint256","name":"agentId","type":"uint256"},{"internalType":"string","name":"metadataKey","type":"string"}],"name":"getMetadata","outputs":[{"internalType":"bytes","name":"","type":"bytes"}],"stateMutability":"view","type":"function"}
+		{"inputs":[{"internalType":"uint256","name":"agentId","type":"uint256"},{"internalType":"string","name":"metadataKey","type":"string"}],"name":"getMetadata","outputs":[{"internalType":"bytes","name":"","type":"bytes"}],"stateMutability":"view","type":"function"},
+		{"inputs":[{"internalType":"uint256","name":"tokenId","type":"uint256"}],"name":"tokenURI","outputs":[{"internalType":"string","name":"","type":"string"}],"stateMutability":"view","type":"function"}
 	]`
 	reputationABI = `[
 		{"inputs":[
@@ -102,6 +106,67 @@ func (c *ERC8004Client) GetMetadata(agentId *big.Int, key string) (string, error
 	var val []byte
 	err = c.identityABI.UnpackIntoInterface(&val, "getMetadata", res)
 	return string(val), err
+}
+
+// GetTokenURI returns the agentURI for an agent.
+func (c *ERC8004Client) GetTokenURI(agentId *big.Int) (string, error) {
+	data, err := c.identityABI.Pack("tokenURI", agentId)
+	if err != nil {
+		return "", err
+	}
+	res, err := c.call(c.identityAddr, data)
+	if err != nil {
+		return "", err
+	}
+	var uri string
+	err = c.identityABI.UnpackIntoInterface(&uri, "tokenURI", res)
+	return uri, err
+}
+
+// ResolvePeerId attempts to find the PeerID via metadata or agentURI services.
+func (c *ERC8004Client) ResolvePeerId(agentId *big.Int) (string, error) {
+	// 1. Try metadata "peerId"
+	peerId, err := c.GetMetadata(agentId, "peerId")
+	if err == nil && peerId != "" {
+		return peerId, nil
+	}
+
+	// 2. Try agentURI (Registration JSON)
+	uri, err := c.GetTokenURI(agentId)
+	if err != nil || uri == "" {
+		return "", fmt.Errorf("peerId not found in metadata and agentURI is inaccessible")
+	}
+
+	// Resolve the URI (basic HTTP support for now)
+	if strings.HasPrefix(uri, "ipfs://") {
+		uri = "https://ipfs.io/ipfs/" + strings.TrimPrefix(uri, "ipfs://")
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(uri)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch agentURI: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var reg struct {
+		Services []struct {
+			Name     string `json:"name"`
+			Endpoint string `json:"endpoint"`
+		} `json:"services"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&reg); err != nil {
+		return "", fmt.Errorf("failed to parse registration JSON: %w", err)
+	}
+
+	for _, s := range reg.Services {
+		if (s.Name == "A2A" || s.Name == "agentmesh") && strings.HasPrefix(s.Endpoint, "p2p://") {
+			return strings.TrimPrefix(s.Endpoint, "p2p://"), nil
+		}
+	}
+
+	return "", fmt.Errorf("peerId not found in metadata or agentURI services")
 }
 
 // GetAgentIdByWallet attempts to find an agent ID owned by a wallet by scanning logs.

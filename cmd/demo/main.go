@@ -84,13 +84,13 @@ func main() {
 	}
 
 	fmt.Println("Starting Agent A...")
-	if err := agentA.Start("/ip4/127.0.0.1/tcp/0"); err != nil {
+	if err := agentA.Start("/ip4/127.0.0.1/tcp/0", ""); err != nil {
 		log.Fatalf("Failed to start Agent A: %v", err)
 	}
 	defer agentA.Stop()
 
 	fmt.Println("Starting Agent B...")
-	if err := agentB.Start("/ip4/127.0.0.1/tcp/0"); err != nil {
+	if err := agentB.Start("/ip4/127.0.0.1/tcp/0", ""); err != nil {
 		log.Fatalf("Failed to start Agent B: %v", err)
 	}
 	defer agentB.Stop()

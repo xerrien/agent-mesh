@@ -8,17 +8,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/libp2p/go-libp2p"
+	dht "github.com/libp2p/go-libp2p-kad-dht"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
+	"github.com/libp2p/go-libp2p/p2p/host/autonat"
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
+	"github.com/multiformats/go-multiaddr"
 )
 
 const (
@@ -42,6 +46,7 @@ type AgentNode struct {
 	Memory            *MemoryStore
 	Watcher           *EventWatcher
 	ERCClient         *ERC8004Client
+	DHT               *dht.IpfsDHT
 	onCapCallbacks    []CapabilityCallback
 	reputationChecker ReputationChecker
 	mu                sync.RWMutex
@@ -71,7 +76,7 @@ func (n *AgentNode) SetReputationChecker(checker ReputationChecker) {
 	n.reputationChecker = checker
 }
 
-func (n *AgentNode) Start(listenAddr string) error {
+func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
 	// Generate or load identity
 	priv, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
 	if err != nil {
@@ -90,14 +95,65 @@ func (n *AgentNode) Start(listenAddr string) error {
 		libp2p.ListenAddrStrings(listenAddr),
 		libp2p.Identity(priv),
 		libp2p.ResourceManager(rm),
+		libp2p.NATPortMap(),         // Enable NAT traversal (UPnP/NAT-PMP)
+		libp2p.EnableRelay(),        // Enable circuit relay
+		libp2p.EnableHolePunching(), // Enable DCUtR hole punching
+		libp2p.EnableAutoRelay(),    // Use default relays automatically
 	)
 	if err != nil {
 		return err
 	}
 	n.Host = h
 
-	// Note: DHT disabled temporarily due to Go toolchain issue
-	// Will be re-enabled once toolchain is fixed
+	// AutoNAT helps the node understand its reachability
+	_, err = autonat.New(h)
+	if err != nil {
+		fmt.Printf("[Connectivity] Failed to start AutoNAT: %v\n", err)
+	}
+
+	// Initialize DHT
+	kdht, err := dht.New(n.ctx, h)
+	if err != nil {
+		return fmt.Errorf("failed to create DHT: %w", err)
+	}
+	n.DHT = kdht
+
+	if err := kdht.Bootstrap(n.ctx); err != nil {
+		return fmt.Errorf("failed to bootstrap DHT: %w", err)
+	}
+
+	// Handle Boostrap Nodes
+	var peers []peer.AddrInfo
+	if bootstrapNodes != "" {
+		for _, s := range strings.Split(bootstrapNodes, ",") {
+			addr, err := multiaddr.NewMultiaddr(strings.TrimSpace(s))
+			if err != nil {
+				continue
+			}
+			info, err := peer.AddrInfoFromP2pAddr(addr)
+			if err != nil {
+				continue
+			}
+			peers = append(peers, *info)
+		}
+	} else {
+		// Default libp2p bootstrap nodes
+		for _, s := range dht.DefaultBootstrapPeers {
+			info, err := peer.AddrInfoFromP2pAddr(s)
+			if err != nil {
+				continue
+			}
+			peers = append(peers, *info)
+		}
+	}
+
+	for _, p := range peers {
+		if err := h.Connect(n.ctx, p); err != nil {
+			fmt.Printf("[Discovery] Failed to connect to bootstrap node %s: %v\n", p.ID, err)
+		} else {
+			fmt.Printf("[Discovery] Connected to bootstrap node %s\n", p.ID)
+		}
+	}
 
 	ps, err := pubsub.NewGossipSub(n.ctx, n.Host)
 	if err != nil {
