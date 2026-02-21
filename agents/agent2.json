@@ -1,0 +1,13 @@
+{
+  "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
+  "name": "AgentMesh Node 2",
+  "description": "Test agent 2",
+  "services": [
+    {
+      "name": "A2A",
+      "endpoint": "p2p://12D3KooWKpnAT1KBGZLGFHLsYiaTew4zeZ5SrphSbvueZ3bS1vQj",
+      "version": "1.0.0"
+    }
+  ],
+  "active": true
+}
