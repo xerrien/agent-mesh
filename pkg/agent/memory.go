@@ -114,7 +114,10 @@ func (s *MemoryStore) IndexRemoteKnowledge(offer KnowledgeOffer, tags []string) 
 	}
 
 	for _, tag := range tags {
-		tx.Exec("INSERT INTO remote_tags (tag, topic_hash) VALUES (?, ?)", tag, offer.TopicHash)
+		if _, err := tx.Exec("INSERT INTO remote_tags (tag, topic_hash) VALUES (?, ?)", tag, offer.TopicHash); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("failed to insert tag %q: %w", tag, err)
+		}
 	}
 
 	return tx.Commit()

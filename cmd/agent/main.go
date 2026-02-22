@@ -70,6 +70,8 @@ func main() {
 	if err == nil {
 		node.Watcher = watcher
 		go node.Watcher.Start(context.Background())
+	} else {
+		fmt.Printf("[Watcher] Warning: failed to connect event watcher: %v (on-chain events will not be monitored)\n", err)
 	}
 
 	if err := node.Start(*listenAddr, *bootstrapNodes); err != nil {

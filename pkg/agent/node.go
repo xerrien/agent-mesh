@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +22,8 @@ import (
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
-	"github.com/libp2p/go-libp2p/p2p/host/autonat"
+	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
+	"github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	"github.com/multiformats/go-multiaddr"
 )
@@ -53,6 +56,7 @@ type AgentNode struct {
 	ctx               context.Context
 	cancel            context.CancelFunc
 	privKey           crypto.PrivKey
+	workspacePath     string // used to persist identity key
 }
 
 func NewAgentNode(dbPath string, workspacePath string) (*AgentNode, error) {
@@ -63,9 +67,10 @@ func NewAgentNode(dbPath string, workspacePath string) (*AgentNode, error) {
 		return nil, err
 	}
 	return &AgentNode{
-		ctx:    ctx,
-		cancel: cancel,
-		Memory: store,
+		ctx:           ctx,
+		cancel:        cancel,
+		Memory:        store,
+		workspacePath: workspacePath,
 	}, nil
 }
 
@@ -77,10 +82,11 @@ func (n *AgentNode) SetReputationChecker(checker ReputationChecker) {
 }
 
 func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
-	// Generate or load identity
-	priv, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+	// --- 1. Persistent Identity ---
+	// Load or generate a persistent private key so the peer ID survives restarts.
+	priv, err := n.loadOrCreateKey()
 	if err != nil {
-		return fmt.Errorf("failed to generate key: %w", err)
+		return fmt.Errorf("failed to load/create identity key: %w", err)
 	}
 	n.privKey = priv
 
@@ -91,69 +97,91 @@ func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
 		return fmt.Errorf("failed to create resource manager: %w", err)
 	}
 
+	// Build bootstrap peer list before starting the host options
+	var bootstrapPeers []peer.AddrInfo
+	if bootstrapNodes != "" {
+		for _, s := range strings.Split(bootstrapNodes, ",") {
+			addr, err := multiaddr.NewMultiaddr(strings.TrimSpace(s))
+			if err != nil {
+				fmt.Printf("[Bootstrap] Invalid multiaddr %q: %v\n", s, err)
+				continue
+			}
+			info, err := peer.AddrInfoFromP2pAddr(addr)
+			if err != nil {
+				fmt.Printf("[Bootstrap] Could not parse peer addr %q: %v\n", s, err)
+				continue
+			}
+			bootstrapPeers = append(bootstrapPeers, *info)
+		}
+	} else {
+		// Use the well-known IPFS/libp2p bootstrap nodes
+		for _, s := range dht.DefaultBootstrapPeers {
+			info, err := peer.AddrInfoFromP2pAddr(s)
+			if err != nil {
+				continue
+			}
+			bootstrapPeers = append(bootstrapPeers, *info)
+		}
+	}
+
 	h, err := libp2p.New(
 		libp2p.ListenAddrStrings(listenAddr),
 		libp2p.Identity(priv),
 		libp2p.ResourceManager(rm),
-		libp2p.NATPortMap(),         // Enable NAT traversal (UPnP/NAT-PMP)
-		libp2p.EnableRelay(),        // Enable circuit relay
-		libp2p.EnableHolePunching(), // Enable DCUtR hole punching
-		libp2p.EnableAutoRelay(),    // Use default relays automatically
+		libp2p.NATPortMap(),         // UPnP/NAT-PMP: open ports automatically
+		libp2p.EnableHolePunching(), // DCUtR: direct hole-punching through NAT
+		// EnableAutoRelay with static relays so it has somewhere to fall back
+		libp2p.EnableAutoRelayWithPeerSource(
+			func(ctx context.Context, num int) <-chan peer.AddrInfo {
+				ch := make(chan peer.AddrInfo)
+				go func() {
+					defer close(ch)
+					for _, p := range bootstrapPeers {
+						select {
+						case ch <- p:
+						case <-ctx.Done():
+							return
+						}
+					}
+				}()
+				return ch
+			},
+		),
 	)
 	if err != nil {
 		return err
 	}
 	n.Host = h
 
-	// AutoNAT helps the node understand its reachability
-	_, err = autonat.New(h)
-	if err != nil {
-		fmt.Printf("[Connectivity] Failed to start AutoNAT: %v\n", err)
-	}
-
-	// Initialize DHT
-	kdht, err := dht.New(n.ctx, h)
+	// Initialize DHT in server mode so this node also helps route others
+	kdht, err := dht.New(n.ctx, h, dht.Mode(dht.ModeServer))
 	if err != nil {
 		return fmt.Errorf("failed to create DHT: %w", err)
 	}
 	n.DHT = kdht
 
+	// Connect to bootstrap peers concurrently BEFORE bootstrapping the DHT
+	var wg sync.WaitGroup
+	for _, p := range bootstrapPeers {
+		wg.Add(1)
+		go func(pi peer.AddrInfo) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
+			defer cancel()
+			if err := h.Connect(ctx, pi); err != nil {
+				fmt.Printf("[Bootstrap] Failed to connect to %s: %v\n", pi.ID, err)
+			} else {
+				fmt.Printf("[Bootstrap] Connected to %s\n", pi.ID)
+			}
+		}(p)
+	}
+	wg.Wait()
+
+	// Bootstrap DHT AFTER peers are connected so it has routes to walk
 	if err := kdht.Bootstrap(n.ctx); err != nil {
 		return fmt.Errorf("failed to bootstrap DHT: %w", err)
 	}
-
-	// Handle Boostrap Nodes
-	var peers []peer.AddrInfo
-	if bootstrapNodes != "" {
-		for _, s := range strings.Split(bootstrapNodes, ",") {
-			addr, err := multiaddr.NewMultiaddr(strings.TrimSpace(s))
-			if err != nil {
-				continue
-			}
-			info, err := peer.AddrInfoFromP2pAddr(addr)
-			if err != nil {
-				continue
-			}
-			peers = append(peers, *info)
-		}
-	} else {
-		// Default libp2p bootstrap nodes
-		for _, s := range dht.DefaultBootstrapPeers {
-			info, err := peer.AddrInfoFromP2pAddr(s)
-			if err != nil {
-				continue
-			}
-			peers = append(peers, *info)
-		}
-	}
-
-	for _, p := range peers {
-		if err := h.Connect(n.ctx, p); err != nil {
-			fmt.Printf("[Discovery] Failed to connect to bootstrap node %s: %v\n", p.ID, err)
-		} else {
-			fmt.Printf("[Discovery] Connected to bootstrap node %s\n", p.ID)
-		}
-	}
+	fmt.Printf("[Discovery] DHT bootstrap complete, %d peers in peerstore\n", len(h.Peerstore().Peers()))
 
 	ps, err := pubsub.NewGossipSub(n.ctx, n.Host)
 	if err != nil {
@@ -187,7 +215,122 @@ func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
 	go n.knowledgeDiscoveryLoop(kSub)
 	n.SetupHandlers()
 
+	// --- 2. mDNS Discovery (LAN) ---
+	// Finds peers on the same local network with zero configuration.
+	mdnsService := mdns.NewMdnsService(n.Host, "agentmesh", &mdnsNotifee{h: n.Host})
+	if err := mdnsService.Start(); err != nil {
+		fmt.Printf("[Discovery] mDNS failed to start (LAN discovery unavailable): %v\n", err)
+	} else {
+		fmt.Println("[Discovery] mDNS started — will discover peers on local network")
+	}
+
+	// --- 3. DHT Namespace Advertising (WAN) ---
+	// Advertise under "agentmesh" in the IPFS DHT so any node can find us
+	// without needing dedicated AgentMesh bootstrap nodes.
+	rd := routing.NewRoutingDiscovery(kdht)
+	go func() {
+		// Advertise ourselves — retry every 10 minutes as TTL approaches expiry
+		for {
+			ttl, err := rd.Advertise(n.ctx, "agentmesh")
+			if err != nil {
+				fmt.Printf("[Discovery] DHT advertise error: %v\n", err)
+			}
+			select {
+			case <-n.ctx.Done():
+				return
+			case <-time.After(ttl * 4 / 5): // re-advertise at 80% of TTL
+			}
+		}
+	}()
+	go n.dhtPeerDiscoveryLoop(rd)
+
 	return nil
+}
+
+// mdnsNotifee connects to peers discovered via mDNS.
+type mdnsNotifee struct{ h host.Host }
+
+func (m *mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
+	fmt.Printf("[Discovery] mDNS found peer: %s\n", pi.ID)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := m.h.Connect(ctx, pi); err != nil {
+		fmt.Printf("[Discovery] mDNS connect failed: %v\n", err)
+	}
+}
+
+// dhtPeerDiscoveryLoop finds AgentMesh peers via DHT namespace and connects to them.
+func (n *AgentNode) dhtPeerDiscoveryLoop(rd *routing.RoutingDiscovery) {
+	// Wait a moment for DHT to settle after bootstrap
+	select {
+	case <-time.After(5 * time.Second):
+	case <-n.ctx.Done():
+		return
+	}
+
+	for {
+		peersCh, err := rd.FindPeers(n.ctx, "agentmesh")
+		if err != nil {
+			fmt.Printf("[Discovery] DHT FindPeers error: %v\n", err)
+		} else {
+			for pi := range peersCh {
+				if pi.ID == n.Host.ID() {
+					continue // skip self
+				}
+				if n.Host.Network().Connectedness(pi.ID) == network.Connected {
+					continue // already connected
+				}
+				fmt.Printf("[Discovery] DHT found AgentMesh peer: %s\n", pi.ID)
+				ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
+				if err := n.Host.Connect(ctx, pi); err != nil {
+					fmt.Printf("[Discovery] Failed to connect to %s: %v\n", pi.ID, err)
+				} else {
+					fmt.Printf("[Discovery] Connected to AgentMesh peer: %s\n", pi.ID)
+				}
+				cancel()
+			}
+		}
+		// Re-scan every 60s
+		select {
+		case <-time.After(60 * time.Second):
+		case <-n.ctx.Done():
+			return
+		}
+	}
+}
+
+// loadOrCreateKey loads a persistent Ed25519 key from disk, or generates and saves a new one.
+func (n *AgentNode) loadOrCreateKey() (crypto.PrivKey, error) {
+	keyPath := filepath.Join(n.workspacePath, "identity.key")
+
+	data, err := os.ReadFile(keyPath)
+	if err == nil {
+		// Key exists — decode and return it
+		kBytes, err := crypto.UnmarshalPrivateKey(data)
+		if err == nil {
+			fmt.Printf("[Identity] Loaded existing key from %s\n", keyPath)
+			return kBytes, nil
+		}
+	}
+
+	// Generate new key
+	priv, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
+	if err != nil {
+		return nil, err
+	}
+
+	// Persist to disk
+	encoded, err := crypto.MarshalPrivateKey(priv)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.WriteFile(keyPath, encoded, 0600); err != nil {
+		// Non-fatal: we still have a key for this session
+		fmt.Printf("[Identity] Warning: could not save key to %s: %v\n", keyPath, err)
+	} else {
+		fmt.Printf("[Identity] Generated new key, saved to %s\n", keyPath)
+	}
+	return priv, nil
 }
 
 func (n *AgentNode) discoveryLoop(sub *pubsub.Subscription) {

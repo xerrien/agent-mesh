@@ -52,13 +52,22 @@ func NewEventWatcher(rpcURL string, escrowAddr, marketAddr string, onTask func(e
 		return nil, err
 	}
 
-	eABI, _ := abi.JSON(strings.NewReader(taskEscrowEventABI))
-	mABI, _ := abi.JSON(strings.NewReader(knowledgeMarketEventABI))
+	// Parse ABIs — fail loudly if malformed rather than silently dropping all events
+	eABI, err := abi.JSON(strings.NewReader(taskEscrowEventABI))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse TaskEscrow ABI: %w", err)
+	}
+	mABI, err := abi.JSON(strings.NewReader(knowledgeMarketEventABI))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse KnowledgeMarket ABI: %w", err)
+	}
 
 	header, err := client.HeaderByNumber(context.Background(), nil)
 	lastBlock := uint64(0)
 	if err == nil {
 		lastBlock = header.Number.Uint64()
+	} else {
+		fmt.Printf("[Watcher] Warning: could not fetch latest block, will start from 0: %v\n", err)
 	}
 
 	return &EventWatcher{
@@ -101,9 +110,16 @@ func (w *EventWatcher) pollLogs(ctx context.Context) {
 		return
 	}
 
+	// Cap query range to 2000 blocks per call (many RPCs reject larger ranges)
+	const maxBlockRange = uint64(2000)
+	toBlock := currentBlock
+	if toBlock-w.lastBlock > maxBlockRange {
+		toBlock = w.lastBlock + maxBlockRange
+	}
+
 	query := ethereum.FilterQuery{
 		FromBlock: big.NewInt(int64(w.lastBlock + 1)),
-		ToBlock:   big.NewInt(int64(currentBlock)),
+		ToBlock:   big.NewInt(int64(toBlock)),
 		Addresses: []common.Address{w.escrowAddr, w.marketAddr},
 	}
 
@@ -146,5 +162,6 @@ func (w *EventWatcher) pollLogs(ctx context.Context) {
 		}
 	}
 
-	w.lastBlock = currentBlock
+	// Only advance lastBlock to what we actually queried (not currentBlock, in case we capped)
+	w.lastBlock = toBlock
 }

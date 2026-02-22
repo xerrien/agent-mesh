@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net/http"
 	"strings"
@@ -149,6 +150,9 @@ func (c *ERC8004Client) ResolvePeerId(agentId *big.Int) (string, error) {
 	}
 	defer resp.Body.Close()
 
+	// Limit to 1MB to prevent memory exhaustion from malicious servers
+	limitedBody := io.LimitReader(resp.Body, 1<<20)
+
 	var reg struct {
 		Services []struct {
 			Name     string `json:"name"`
@@ -156,7 +160,7 @@ func (c *ERC8004Client) ResolvePeerId(agentId *big.Int) (string, error) {
 		} `json:"services"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&reg); err != nil {
+	if err := json.NewDecoder(limitedBody).Decode(&reg); err != nil {
 		return "", fmt.Errorf("failed to parse registration JSON: %w", err)
 	}
 
@@ -174,10 +178,11 @@ func (c *ERC8004Client) GetAgentIdByWallet(wallet common.Address) (*big.Int, err
 	// Registered(uint256 indexed agentId, string agentURI, address indexed owner)
 	// Topic 0: Keccak256("Registered(uint256,string,address)")
 	// Topic 2: address (indexed owner)
+	// Keccak256("Registered(uint256,string,address)") — verify against deployed contract ABI if events don't resolve
 	sigHash := common.HexToHash("ca52e62c367d81bb2e328eb795f7c7ba24afb478408a26c0e201d155c449bc4a")
 
 	query := ethereum.FilterQuery{
-		FromBlock: big.NewInt(12345678), // Registry deployment block on Base Sepolia
+		FromBlock: big.NewInt(0), // Scan from genesis; adjust if you know the registry deploy block
 		ToBlock:   nil,
 		Addresses: []common.Address{c.identityAddr},
 		Topics: [][]common.Hash{
