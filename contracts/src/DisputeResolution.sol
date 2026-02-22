@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "./ProxyOnly.sol";
 
 interface ITaskEscrow {
     function resolveForWorker(uint256 taskId) external;
@@ -30,7 +33,7 @@ interface IJuryPool {
  * @title DisputeResolution
  * @notice Handles multi-round agent jury verdicts for task disputes
  */
-contract DisputeResolution is ReentrancyGuard, Ownable {
+contract DisputeResolution is Initializable, ReentrancyGuardUpgradeable, OwnableUpgradeable, UUPSUpgradeable, ProxyOnly {
     
     enum DisputeState { Open, VotingRound1, VotingRound2, VotingRound3, Resolved }
     enum Verdict { Pending, ApproveWorker, ApproveClient }
@@ -43,6 +46,7 @@ contract DisputeResolution is ReentrancyGuard, Ownable {
         uint256 currentRound;
         uint256 votingDeadline;
         Verdict finalVerdict;
+        uint256 rewardPool;
     }
     
     struct Round {
@@ -68,6 +72,7 @@ contract DisputeResolution is ReentrancyGuard, Ownable {
     mapping(uint256 => Dispute) public disputes;
     mapping(uint256 => mapping(uint256 => Round)) internal rounds; // disputeId => round => Round
     mapping(uint256 => uint256) public appealDeadlines;
+    mapping(uint256 => uint256) public taskToDisputeId;
     
     event DisputeOpened(uint256 indexed disputeId, uint256 indexed taskId);
     event JurorsSelected(uint256 indexed disputeId, uint256 round, address[] jurors);
@@ -76,16 +81,28 @@ contract DisputeResolution is ReentrancyGuard, Ownable {
     event DisputeResolved(uint256 indexed disputeId, Verdict finalVerdict);
     event AppealFiled(uint256 indexed disputeId, uint256 newRound);
     
-    constructor(address _escrow, address _juryPool) Ownable(msg.sender) {
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(address _escrow, address _juryPool) external initializer onlyProxyCall {
+        require(_escrow != address(0), "Invalid escrow");
+        require(_juryPool != address(0), "Invalid jury pool");
+        __ReentrancyGuard_init();
+        __Ownable_init(msg.sender);
+        __UUPSUpgradeable_init();
         taskEscrow = ITaskEscrow(_escrow);
         juryPool = IJuryPool(_juryPool);
     }
+
+    function _authorizeUpgrade(address) internal override onlyOwner onlyProxyCall {}
     
     /**
      * @notice Open a dispute for a task
      */
-    function openDispute(uint256 taskId) external payable returns (uint256) {
+    function openDispute(uint256 taskId) external payable onlyProxyCall returns (uint256) {
         require(msg.value >= DISPUTE_FEE, "Dispute fee required");
+        require(taskToDisputeId[taskId] == 0, "Dispute already exists for task");
         (address client, address worker,,,,, uint8 state,,) = taskEscrow.getTask(taskId);
         require(state == 4, "Task not in disputed state"); // TaskState.Disputed = 4
         require(msg.sender == client || msg.sender == worker, "Not a party");
@@ -98,8 +115,10 @@ contract DisputeResolution is ReentrancyGuard, Ownable {
             state: DisputeState.VotingRound1,
             currentRound: 1,
             votingDeadline: block.timestamp + VOTING_PERIOD,
-            finalVerdict: Verdict.Pending
+            finalVerdict: Verdict.Pending,
+            rewardPool: msg.value
         });
+        taskToDisputeId[taskId] = disputeCount;
         
         // Select jurors for round 1
         address[] memory jurors = juryPool.selectJurors(
@@ -121,7 +140,7 @@ contract DisputeResolution is ReentrancyGuard, Ownable {
     /**
      * @notice Juror submits their verdict
      */
-    function submitVerdict(uint256 disputeId, Verdict verdict) external {
+    function submitVerdict(uint256 disputeId, Verdict verdict) external onlyProxyCall {
         Dispute storage d = disputes[disputeId];
         require(d.state != DisputeState.Resolved, "Already resolved");
         require(block.timestamp <= d.votingDeadline, "Voting ended");
@@ -147,7 +166,7 @@ contract DisputeResolution is ReentrancyGuard, Ownable {
     /**
      * @notice Resolve a round after voting period ends
      */
-    function resolveRound(uint256 disputeId) external {
+    function resolveRound(uint256 disputeId) external onlyProxyCall {
         Dispute storage d = disputes[disputeId];
         require(block.timestamp > d.votingDeadline, "Voting still open");
         require(d.state != DisputeState.Resolved, "Already resolved");
@@ -158,7 +177,7 @@ contract DisputeResolution is ReentrancyGuard, Ownable {
     /**
      * @notice Losing party files an appeal
      */
-    function appeal(uint256 disputeId) external payable {
+    function appeal(uint256 disputeId) external payable onlyProxyCall {
         Dispute storage d = disputes[disputeId];
         Round storage r = rounds[disputeId][d.currentRound];
         
@@ -177,6 +196,7 @@ contract DisputeResolution is ReentrancyGuard, Ownable {
         // Appeal stake increases each round
         uint256 appealStake = 0.01 ether * d.currentRound;
         require(msg.value >= appealStake, "Insufficient appeal stake");
+        d.rewardPool += msg.value;
         
         // Start next round
         d.currentRound++;
@@ -206,7 +226,7 @@ contract DisputeResolution is ReentrancyGuard, Ownable {
     /**
      * @notice Finalize dispute after appeal period
      */
-    function finalize(uint256 disputeId) external nonReentrant {
+    function finalize(uint256 disputeId) external nonReentrant onlyProxyCall {
         Dispute storage d = disputes[disputeId];
         Round storage r = rounds[disputeId][d.currentRound];
         
@@ -270,20 +290,8 @@ contract DisputeResolution is ReentrancyGuard, Ownable {
     
     function _settleJurors(uint256 disputeId, Verdict finalVerdict) internal {
         Dispute storage d = disputes[disputeId];
-        
-        // Count winners to distribute rewards
-        uint256 totalRewardPool = DISPUTE_FEE;
-        
-        // Calculate total slashed amount to add to rewards
-        for (uint256 round = 1; round <= d.currentRound; round++) {
-            Round storage r = rounds[disputeId][round];
-            for (uint256 i = 0; i < r.jurors.length; i++) {
-                address juror = r.jurors[i];
-                if (r.votes[juror] != finalVerdict) {
-                    totalRewardPool += SLASH_AMOUNT;
-                }
-            }
-        }
+        uint256 totalRewardPool = d.rewardPool;
+        d.rewardPool = 0;
 
         // Distribute to winners in the final/correct rounds
         // For simplicity, we'll reward jurors in the FINAL round who were correct
@@ -330,7 +338,7 @@ contract DisputeResolution is ReentrancyGuard, Ownable {
         return false;
     }
     
-    function getDispute(uint256 disputeId) external view returns (Dispute memory) {
+    function getDispute(uint256 disputeId) external view onlyProxyCall returns (Dispute memory) {
         return disputes[disputeId];
     }
     
@@ -338,7 +346,7 @@ contract DisputeResolution is ReentrancyGuard, Ownable {
         uint256 approveWorker,
         uint256 approveClient,
         bool resolved
-    ) {
+    ) onlyProxyCall {
         Round storage r = rounds[disputeId][round];
         return (r.approveWorkerCount, r.approveClientCount, r.resolved);
     }

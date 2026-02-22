@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
+import "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import "../src/TaskEscrow.sol";
 import "../src/JuryPool.sol";
 import "../src/DisputeResolution.sol";
@@ -18,9 +19,26 @@ contract DisputeFlowTest is Test {
     address[] jurors;
     
     function setUp() public {
-        escrow = new TaskEscrow();
-        pool = new JuryPool();
-        dispute = new DisputeResolution(address(escrow), address(pool));
+        TaskEscrow escrowImpl = new TaskEscrow();
+        JuryPool poolImpl = new JuryPool();
+        DisputeResolution disputeImpl = new DisputeResolution();
+
+        ERC1967Proxy escrowProxy = new ERC1967Proxy(
+            address(escrowImpl),
+            abi.encodeCall(TaskEscrow.initialize, ())
+        );
+        ERC1967Proxy poolProxy = new ERC1967Proxy(
+            address(poolImpl),
+            abi.encodeCall(JuryPool.initialize, ())
+        );
+        ERC1967Proxy disputeProxy = new ERC1967Proxy(
+            address(disputeImpl),
+            abi.encodeCall(DisputeResolution.initialize, (address(escrowProxy), address(poolProxy)))
+        );
+
+        escrow = TaskEscrow(address(escrowProxy));
+        pool = JuryPool(address(poolProxy));
+        dispute = DisputeResolution(address(disputeProxy));
         
         escrow.setDisputeResolver(address(dispute));
         escrow.setJuryPool(address(pool));

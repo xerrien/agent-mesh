@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "./ProxyOnly.sol";
 
 /**
  * @title JuryPool
  * @notice Manages agent registration for dispute resolution jury duty
  */
-contract JuryPool is ReentrancyGuard, Ownable {
+contract JuryPool is Initializable, ReentrancyGuardUpgradeable, OwnableUpgradeable, UUPSUpgradeable, ProxyOnly {
     
     struct Juror {
         address agent;
@@ -34,13 +37,23 @@ contract JuryPool is ReentrancyGuard, Ownable {
     event JurorSelected(address indexed agent, uint256 disputeId);
     event ReputationUpdated(address indexed agent, uint256 newReputation);
     
-    constructor() Ownable(msg.sender) {}
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize() external initializer onlyProxyCall {
+        __ReentrancyGuard_init();
+        __Ownable_init(msg.sender);
+        __UUPSUpgradeable_init();
+    }
+
+    function _authorizeUpgrade(address) internal override onlyOwner onlyProxyCall {}
     
-    function setDisputeResolver(address _resolver) external onlyOwner {
+    function setDisputeResolver(address _resolver) external onlyOwner onlyProxyCall {
         disputeResolver = _resolver;
     }
     
-    function setReputationRegistry(address _registry) external onlyOwner {
+    function setReputationRegistry(address _registry) external onlyOwner onlyProxyCall {
         reputationRegistry = _registry;
     }
     
@@ -52,9 +65,10 @@ contract JuryPool is ReentrancyGuard, Ownable {
     /**
      * @notice Agent registers as a potential juror
      */
-    function register() external payable nonReentrant {
+    function register() external payable nonReentrant onlyProxyCall {
         require(msg.value >= MIN_STAKE, "Insufficient stake");
         require(!jurors[msg.sender].active, "Already registered");
+        require(jurors[msg.sender].stake == 0, "Withdraw existing stake first");
         
         // In production, query ERC-8004 for reputation
         uint256 reputation = _getReputation(msg.sender);
@@ -78,20 +92,20 @@ contract JuryPool is ReentrancyGuard, Ownable {
     /**
      * @notice Agent withdraws from jury pool
      */
-    function withdraw() external nonReentrant {
+    function withdraw() external nonReentrant onlyProxyCall {
         Juror storage juror = jurors[msg.sender];
-        require(juror.active, "Not registered");
+        require(juror.stake > 0, "No stake");
         
         uint256 stake = juror.stake;
+        bool wasActive = juror.active;
         juror.active = false;
         juror.stake = 0;
-        
-        // Remove from list (swap with last)
-        uint256 idx = jurorIndex[msg.sender];
-        address lastJuror = jurorList[jurorList.length - 1];
-        jurorList[idx] = lastJuror;
-        jurorIndex[lastJuror] = idx;
-        jurorList.pop();
+
+        if (wasActive) {
+            _removeJurorFromList(msg.sender);
+        } else {
+            _removeJurorFromListIfPresent(msg.sender);
+        }
         
         (bool success, ) = msg.sender.call{value: stake}("");
         require(success, "Withdrawal failed");
@@ -111,7 +125,7 @@ contract JuryPool is ReentrancyGuard, Ownable {
         uint256 count,
         address excludeClient,
         address excludeWorker
-    ) external onlyDisputeResolver returns (address[] memory) {
+    ) external onlyDisputeResolver onlyProxyCall returns (address[] memory) {
         require(jurorList.length >= count, "Not enough jurors");
         
         address[] memory selected = new address[](count);
@@ -160,7 +174,7 @@ contract JuryPool is ReentrancyGuard, Ownable {
     /**
      * @notice Update juror stats after a verdict
      */
-    function recordVerdict(address agent, bool wasCorrect) external onlyDisputeResolver {
+    function recordVerdict(address agent, bool wasCorrect) external onlyDisputeResolver onlyProxyCall {
         Juror storage juror = jurors[agent];
         if (!juror.active) return;
         
@@ -173,7 +187,7 @@ contract JuryPool is ReentrancyGuard, Ownable {
     /**
      * @notice Slash a juror's stake (for incorrect verdicts)
      */
-    function slashStake(address agent, uint256 amount) external onlyDisputeResolver {
+    function slashStake(address agent, uint256 amount) external onlyDisputeResolver onlyProxyCall {
         Juror storage juror = jurors[agent];
         require(juror.active, "Not active juror");
         
@@ -185,7 +199,30 @@ contract JuryPool is ReentrancyGuard, Ownable {
         // If stake falls below minimum, deactivate
         if (juror.stake < MIN_STAKE) {
             juror.active = false;
+            _removeJurorFromList(agent);
         }
+    }
+
+    function _removeJurorFromList(address agent) internal {
+        uint256 idx = jurorIndex[agent];
+        uint256 lastIdx = jurorList.length - 1;
+        address lastJuror = jurorList[lastIdx];
+
+        jurorList[idx] = lastJuror;
+        jurorIndex[lastJuror] = idx;
+        jurorList.pop();
+        delete jurorIndex[agent];
+    }
+
+    function _removeJurorFromListIfPresent(address agent) internal {
+        if (jurorList.length == 0) {
+            return;
+        }
+        uint256 idx = jurorIndex[agent];
+        if (idx >= jurorList.length || jurorList[idx] != agent) {
+            return;
+        }
+        _removeJurorFromList(agent);
     }
     
     /**
@@ -201,11 +238,11 @@ contract JuryPool is ReentrancyGuard, Ownable {
         return 100;
     }
     
-    function getActiveJurorCount() external view returns (uint256) {
+    function getActiveJurorCount() external view onlyProxyCall returns (uint256) {
         return jurorList.length;
     }
     
-    function getJuror(address agent) external view returns (Juror memory) {
+    function getJuror(address agent) external view onlyProxyCall returns (Juror memory) {
         return jurors[agent];
     }
 }

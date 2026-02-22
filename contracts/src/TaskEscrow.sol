@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "./ProxyOnly.sol";
 
 /**
  * @title TaskEscrow
  * @notice Holds payments for agent tasks until verification passes
  */
-contract TaskEscrow is ReentrancyGuard, Ownable {
+contract TaskEscrow is Initializable, ReentrancyGuardUpgradeable, OwnableUpgradeable, UUPSUpgradeable, ProxyOnly {
     
     enum TaskState { Created, Accepted, Submitted, Verified, Disputed, Completed, Refunded }
     
@@ -39,6 +42,7 @@ contract TaskEscrow is ReentrancyGuard, Ownable {
     event TaskCompleted(uint256 indexed taskId, address indexed worker, uint256 payment);
     event TaskRefunded(uint256 indexed taskId, address indexed client, uint256 amount);
     event TaskDisputed(uint256 indexed taskId);
+    event TaskCancelled(uint256 indexed taskId, address indexed client, uint256 amount);
     
     modifier onlyClient(uint256 taskId) {
         require(msg.sender == tasks[taskId].client, "Not client");
@@ -49,19 +53,36 @@ contract TaskEscrow is ReentrancyGuard, Ownable {
         require(msg.sender == tasks[taskId].worker, "Not worker");
         _;
     }
+
+    modifier taskExists(uint256 taskId) {
+        require(taskId > 0 && taskId <= taskCount, "Task does not exist");
+        _;
+    }
     
     modifier onlyDisputeResolver() {
         require(msg.sender == disputeResolver, "Not dispute resolver");
         _;
     }
     
-    constructor() Ownable(msg.sender) {}
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize() external initializer onlyProxyCall {
+        __ReentrancyGuard_init();
+        __Ownable_init(msg.sender);
+        __UUPSUpgradeable_init();
+    }
+
+    function _authorizeUpgrade(address) internal override onlyOwner onlyProxyCall {}
     
-    function setDisputeResolver(address _resolver) external onlyOwner {
+    function setDisputeResolver(address _resolver) external onlyOwner onlyProxyCall {
+        require(_resolver != address(0), "Invalid resolver");
         disputeResolver = _resolver;
     }
     
-    function setJuryPool(address _pool) external onlyOwner {
+    function setJuryPool(address _pool) external onlyOwner onlyProxyCall {
+        require(_pool != address(0), "Invalid jury pool");
         juryPool = _pool;
     }
     
@@ -69,7 +90,7 @@ contract TaskEscrow is ReentrancyGuard, Ownable {
      * @notice Client creates a task with payment
      * @param specHash Hash of the task specification (stored off-chain)
      */
-    function createTask(bytes32 specHash) external payable nonReentrant returns (uint256) {
+    function createTask(bytes32 specHash) external payable nonReentrant onlyProxyCall returns (uint256) {
         require(msg.value > 0, "Payment required");
         
         taskCount++;
@@ -92,7 +113,7 @@ contract TaskEscrow is ReentrancyGuard, Ownable {
     /**
      * @notice Worker accepts a task by staking collateral
      */
-    function acceptTask(uint256 taskId) external payable nonReentrant {
+    function acceptTask(uint256 taskId) external payable nonReentrant taskExists(taskId) onlyProxyCall {
         Task storage task = tasks[taskId];
         require(task.state == TaskState.Created, "Task not available");
         
@@ -109,7 +130,7 @@ contract TaskEscrow is ReentrancyGuard, Ownable {
     /**
      * @notice Worker submits the result
      */
-    function submitResult(uint256 taskId, bytes32 resultHash) external onlyWorker(taskId) {
+    function submitResult(uint256 taskId, bytes32 resultHash) external taskExists(taskId) onlyWorker(taskId) onlyProxyCall {
         Task storage task = tasks[taskId];
         require(task.state == TaskState.Accepted, "Task not accepted");
         
@@ -123,7 +144,7 @@ contract TaskEscrow is ReentrancyGuard, Ownable {
     /**
      * @notice Client approves the result, releasing payment
      */
-    function approveResult(uint256 taskId) external onlyClient(taskId) nonReentrant {
+    function approveResult(uint256 taskId) external taskExists(taskId) onlyClient(taskId) nonReentrant onlyProxyCall {
         Task storage task = tasks[taskId];
         require(task.state == TaskState.Submitted, "Not submitted");
         
@@ -133,9 +154,10 @@ contract TaskEscrow is ReentrancyGuard, Ownable {
     /**
      * @notice Client disputes the result
      */
-    function disputeResult(uint256 taskId) external onlyClient(taskId) {
+    function disputeResult(uint256 taskId) external taskExists(taskId) onlyClient(taskId) onlyProxyCall {
         Task storage task = tasks[taskId];
         require(task.state == TaskState.Submitted, "Not submitted");
+        require(disputeResolver != address(0), "Dispute resolver not set");
         
         task.state = TaskState.Disputed;
         emit TaskDisputed(taskId);
@@ -146,7 +168,7 @@ contract TaskEscrow is ReentrancyGuard, Ownable {
     /**
      * @notice Called by DisputeResolution contract to resolve in favor of worker
      */
-    function resolveForWorker(uint256 taskId) external onlyDisputeResolver nonReentrant {
+    function resolveForWorker(uint256 taskId) external taskExists(taskId) onlyDisputeResolver nonReentrant onlyProxyCall {
         Task storage task = tasks[taskId];
         require(task.state == TaskState.Disputed, "Not disputed");
         
@@ -156,7 +178,7 @@ contract TaskEscrow is ReentrancyGuard, Ownable {
     /**
      * @notice Called by DisputeResolution contract to resolve in favor of client
      */
-    function resolveForClient(uint256 taskId) external onlyDisputeResolver nonReentrant {
+    function resolveForClient(uint256 taskId) external taskExists(taskId) onlyDisputeResolver nonReentrant onlyProxyCall {
         Task storage task = tasks[taskId];
         require(task.state == TaskState.Disputed, "Not disputed");
         
@@ -174,12 +196,26 @@ contract TaskEscrow is ReentrancyGuard, Ownable {
     /**
      * @notice Auto-complete if client doesn't respond within timeout
      */
-    function claimAfterTimeout(uint256 taskId) external onlyWorker(taskId) nonReentrant {
+    function claimAfterTimeout(uint256 taskId) external taskExists(taskId) onlyWorker(taskId) nonReentrant onlyProxyCall {
         Task storage task = tasks[taskId];
         require(task.state == TaskState.Submitted, "Not submitted");
         require(block.timestamp > task.submittedAt + VERIFICATION_TIMEOUT, "Timeout not reached");
         
         _completeTask(taskId);
+    }
+
+    function cancelTask(uint256 taskId) external taskExists(taskId) onlyClient(taskId) nonReentrant onlyProxyCall {
+        Task storage task = tasks[taskId];
+        require(task.state == TaskState.Created, "Task not cancellable");
+
+        uint256 amount = task.payment;
+        task.payment = 0;
+        task.state = TaskState.Refunded;
+
+        (bool success, ) = task.client.call{value: amount}("");
+        require(success, "Cancel refund failed");
+
+        emit TaskCancelled(taskId, task.client, amount);
     }
     
     function _completeTask(uint256 taskId) internal {
@@ -194,7 +230,7 @@ contract TaskEscrow is ReentrancyGuard, Ownable {
         emit TaskCompleted(taskId, task.worker, workerPayout);
     }
     
-    function getTask(uint256 taskId) external view returns (Task memory) {
+    function getTask(uint256 taskId) external view taskExists(taskId) onlyProxyCall returns (Task memory) {
         return tasks[taskId];
     }
 }
