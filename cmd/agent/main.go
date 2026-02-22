@@ -15,7 +15,7 @@ import (
 func main() {
 	dbPath := flag.String("db", "agent_metadata.db", "Path to metadata database")
 	workspace := flag.String("workspace", "./workspace", "Path to OpenClaw workspace")
-	listenAddr := flag.String("listen", "/ip4/0.0.0.0/tcp/0", "libp2p listen address")
+	listenAddr := flag.String("listen", "/ip4/0.0.0.0/tcp/4001", "libp2p listen address (TCP; QUIC is derived automatically)")
 	rpcURL := flag.String("rpc", "", "Ethereum RPC URL (e.g., Alchemy/Infura)")
 	escrowAddr := flag.String("escrow", "", "TaskEscrow contract address")
 	marketAddr := flag.String("market", "", "KnowledgeMarket contract address")

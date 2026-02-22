@@ -124,13 +124,22 @@ func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
 		}
 	}
 
+	// Derive a QUIC listen address from the TCP listen addr for better NAT traversal.
+	// e.g., /ip4/0.0.0.0/tcp/4001 -> /ip4/0.0.0.0/udp/4001/quic-v1
+	quicAddr := strings.Replace(listenAddr, "/tcp/", "/udp/", 1) + "/quic-v1"
+
 	h, err := libp2p.New(
-		libp2p.ListenAddrStrings(listenAddr),
+		libp2p.ListenAddrStrings(
+			listenAddr, // TCP
+			quicAddr,   // QUIC-v1 (better NAT traversal)
+		),
 		libp2p.Identity(priv),
 		libp2p.ResourceManager(rm),
 		libp2p.NATPortMap(),         // UPnP/NAT-PMP: open ports automatically
-		libp2p.EnableHolePunching(), // DCUtR: direct hole-punching through NAT
-		// EnableAutoRelay with static relays so it has somewhere to fall back
+		libp2p.EnableRelay(),        // Act as a relay for other NAT'd peers (if we have a public IP)
+		libp2p.EnableHolePunching(), // DCUtR: attempt direct connection after relay intro
+		// Use bootstrap peers as initial relay candidates; once AgentMesh nodes
+		// with public IPs are discovered, they replace this dependency entirely.
 		libp2p.EnableAutoRelayWithPeerSource(
 			func(ctx context.Context, num int) <-chan peer.AddrInfo {
 				ch := make(chan peer.AddrInfo)
