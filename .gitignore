@@ -45,3 +45,5 @@ contracts/broadcast/
 
 # Foundry dependencies
 contracts/lib/
+
+workspace

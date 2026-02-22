@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,6 +26,8 @@ import (
 	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
 	"github.com/libp2p/go-libp2p/p2p/discovery/routing"
 	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
+	relayclient "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
+	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	"github.com/multiformats/go-multiaddr"
 )
 
@@ -57,6 +60,8 @@ type AgentNode struct {
 	cancel            context.CancelFunc
 	privKey           crypto.PrivKey
 	workspacePath     string // used to persist identity key
+	minRelayResv      int
+	maxRelayResv      int
 }
 
 func NewAgentNode(dbPath string, workspacePath string) (*AgentNode, error) {
@@ -71,6 +76,8 @@ func NewAgentNode(dbPath string, workspacePath string) (*AgentNode, error) {
 		cancel:        cancel,
 		Memory:        store,
 		workspacePath: workspacePath,
+		minRelayResv:  1,
+		maxRelayResv:  2,
 	}, nil
 }
 
@@ -79,6 +86,20 @@ func (n *AgentNode) SetReputationChecker(checker ReputationChecker) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.reputationChecker = checker
+}
+
+// SetRelayReservationPolicy configures the minimum and maximum number of relay reservations to keep.
+func (n *AgentNode) SetRelayReservationPolicy(minReservations, maxReservations int) {
+	if minReservations < 0 {
+		minReservations = 0
+	}
+	if maxReservations < minReservations {
+		maxReservations = minReservations
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.minRelayResv = minReservations
+	n.maxRelayResv = maxReservations
 }
 
 func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
@@ -97,17 +118,8 @@ func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
 		return fmt.Errorf("failed to create resource manager: %w", err)
 	}
 
-	// Always include IPFS bootstrap peers for DHT routing table population.
-	// Custom bootstrap peers are added on top — they are AgentMesh-specific
-	// entry points and don't replace the DHT infrastructure peers.
+	// Use only explicitly configured bootstrap peers.
 	var bootstrapPeers []peer.AddrInfo
-	for _, s := range dht.DefaultBootstrapPeers {
-		info, err := peer.AddrInfoFromP2pAddr(s)
-		if err != nil {
-			continue
-		}
-		bootstrapPeers = append(bootstrapPeers, *info)
-	}
 	if bootstrapNodes != "" {
 		for _, s := range strings.Split(bootstrapNodes, ",") {
 			addr, err := multiaddr.NewMultiaddr(strings.TrimSpace(s))
@@ -123,6 +135,9 @@ func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
 			bootstrapPeers = append(bootstrapPeers, *info)
 		}
 	}
+	if len(bootstrapPeers) == 0 {
+		fmt.Println("[Bootstrap] Warning: no bootstrap peers configured; WAN discovery/relay may be limited")
+	}
 
 	// Derive a QUIC listen address from the TCP listen addr for better NAT traversal.
 	// e.g., /ip4/0.0.0.0/tcp/4001 -> /ip4/0.0.0.0/udp/4001/quic-v1
@@ -135,8 +150,9 @@ func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
 		),
 		libp2p.Identity(priv),
 		libp2p.ResourceManager(rm),
-		libp2p.NATPortMap(),         // UPnP/NAT-PMP: open ports automatically
-		libp2p.EnableRelay(),        // Act as a relay for other NAT'd peers (if we have a public IP)
+		libp2p.NATPortMap(),  // UPnP/NAT-PMP: open ports automatically
+		libp2p.EnableRelay(), // Act as a relay for other NAT'd peers (if we have a public IP)
+		libp2p.EnableRelayService(relayv2.WithResources(relayv2.DefaultResources())), // Accept relay reservations / relay traffic
 		libp2p.EnableHolePunching(), // DCUtR: attempt direct connection after relay intro
 		// Use bootstrap peers as initial relay candidates; once AgentMesh nodes
 		// with public IPs are discovered, they replace this dependency entirely.
@@ -223,6 +239,7 @@ func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
 	go n.discoveryLoop(sub)
 	go n.knowledgeDiscoveryLoop(kSub)
 	n.SetupHandlers()
+	go n.relayReservationLoop(bootstrapPeers)
 
 	// Periodic peer count summary so the user can see network health at a glance
 	go func() {
@@ -268,6 +285,116 @@ func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
 	go n.dhtPeerDiscoveryLoop(rd)
 
 	return nil
+}
+
+func (n *AgentNode) relayReservationLoop(candidates []peer.AddrInfo) {
+	n.mu.RLock()
+	minRes := n.minRelayResv
+	maxRes := n.maxRelayResv
+	n.mu.RUnlock()
+	if maxRes == 0 {
+		return
+	}
+
+	type reservationState struct {
+		expiresAt time.Time
+	}
+	reserved := make(map[peer.ID]reservationState)
+
+	maintain := func() {
+		now := time.Now()
+		for pid, rs := range reserved {
+			// Consider reservation stale shortly before expiry so renewal can happen proactively.
+			if now.After(rs.expiresAt.Add(-2 * time.Minute)) {
+				delete(reserved, pid)
+			}
+		}
+
+		desired := minRes
+		if desired < 1 {
+			desired = 1
+		}
+		if desired > maxRes {
+			desired = maxRes
+		}
+		if len(reserved) >= desired {
+			return
+		}
+
+		for _, pi := range sortedUniquePeers(candidates) {
+			if len(reserved) >= desired || len(reserved) >= maxRes {
+				return
+			}
+			if _, ok := reserved[pi.ID]; ok {
+				continue
+			}
+
+			ctx, cancel := context.WithTimeout(n.ctx, 12*time.Second)
+			if n.Host.Network().Connectedness(pi.ID) != network.Connected {
+				if err := n.Host.Connect(ctx, pi); err != nil {
+					cancel()
+					continue
+				}
+			}
+
+			resv, err := relayclient.Reserve(ctx, n.Host, pi)
+			cancel()
+			if err != nil {
+				continue
+			}
+
+			if len(resv.Addrs) > 0 {
+				ttl := time.Until(resv.Expiration)
+				if ttl > 0 {
+					n.Host.Peerstore().AddAddrs(pi.ID, resv.Addrs, ttl)
+				}
+			}
+			reserved[pi.ID] = reservationState{expiresAt: resv.Expiration}
+			fmt.Printf("[Relay] Reserved slot on %s (expires %s)\n", pi.ID, resv.Expiration.Format(time.RFC3339))
+		}
+
+		if len(reserved) < desired {
+			fmt.Printf("[Relay] Warning: only %d/%d relay reservations active\n", len(reserved), desired)
+		}
+	}
+
+	// Initial attempt quickly after startup, then periodic maintenance.
+	select {
+	case <-time.After(3 * time.Second):
+	case <-n.ctx.Done():
+		return
+	}
+	maintain()
+
+	ticker := time.NewTicker(45 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			maintain()
+		case <-n.ctx.Done():
+			return
+		}
+	}
+}
+
+func sortedUniquePeers(peers []peer.AddrInfo) []peer.AddrInfo {
+	out := make([]peer.AddrInfo, 0, len(peers))
+	seen := make(map[peer.ID]struct{}, len(peers))
+	for _, pi := range peers {
+		if pi.ID == "" {
+			continue
+		}
+		if _, ok := seen[pi.ID]; ok {
+			continue
+		}
+		seen[pi.ID] = struct{}{}
+		out = append(out, pi)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].ID.String() < out[j].ID.String()
+	})
+	return out
 }
 
 // mdnsNotifee connects to peers discovered via mDNS.

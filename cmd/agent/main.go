@@ -16,6 +16,8 @@ func main() {
 	dbPath := flag.String("db", "agent_metadata.db", "Path to metadata database")
 	workspace := flag.String("workspace", "./workspace", "Path to OpenClaw workspace")
 	listenAddr := flag.String("listen", "/ip4/0.0.0.0/tcp/4001", "libp2p listen address (TCP; QUIC is derived automatically)")
+	minRelayReservations := flag.Int("relay-min", 1, "Minimum number of active relay reservations to maintain")
+	maxRelayReservations := flag.Int("relay-max", 2, "Maximum number of active relay reservations to maintain")
 	rpcURL := flag.String("rpc", "", "Ethereum RPC URL (e.g., Alchemy/Infura)")
 	escrowAddr := flag.String("escrow", "", "TaskEscrow contract address")
 	marketAddr := flag.String("market", "", "KnowledgeMarket contract address")
@@ -43,6 +45,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize node: %v", err)
 	}
+	node.SetRelayReservationPolicy(*minRelayReservations, *maxRelayReservations)
 
 	// Setup ERC8004 Client (Addresses provided via CLI)
 	node.ERCClient = agent.NewERC8004Client(*rpcURL, *identAddr, *reputAddr, "0x0000000000000000000000000000000000000000")
