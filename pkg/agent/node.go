@@ -97,8 +97,17 @@ func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
 		return fmt.Errorf("failed to create resource manager: %w", err)
 	}
 
-	// Build bootstrap peer list before starting the host options
+	// Always include IPFS bootstrap peers for DHT routing table population.
+	// Custom bootstrap peers are added on top — they are AgentMesh-specific
+	// entry points and don't replace the DHT infrastructure peers.
 	var bootstrapPeers []peer.AddrInfo
+	for _, s := range dht.DefaultBootstrapPeers {
+		info, err := peer.AddrInfoFromP2pAddr(s)
+		if err != nil {
+			continue
+		}
+		bootstrapPeers = append(bootstrapPeers, *info)
+	}
 	if bootstrapNodes != "" {
 		for _, s := range strings.Split(bootstrapNodes, ",") {
 			addr, err := multiaddr.NewMultiaddr(strings.TrimSpace(s))
@@ -109,15 +118,6 @@ func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
 			info, err := peer.AddrInfoFromP2pAddr(addr)
 			if err != nil {
 				fmt.Printf("[Bootstrap] Could not parse peer addr %q: %v\n", s, err)
-				continue
-			}
-			bootstrapPeers = append(bootstrapPeers, *info)
-		}
-	} else {
-		// Use the well-known IPFS/libp2p bootstrap nodes
-		for _, s := range dht.DefaultBootstrapPeers {
-			info, err := peer.AddrInfoFromP2pAddr(s)
-			if err != nil {
 				continue
 			}
 			bootstrapPeers = append(bootstrapPeers, *info)
@@ -224,6 +224,20 @@ func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
 	go n.knowledgeDiscoveryLoop(kSub)
 	n.SetupHandlers()
 
+	// Periodic peer count summary so the user can see network health at a glance
+	go func() {
+		for {
+			select {
+			case <-time.After(30 * time.Second):
+			case <-n.ctx.Done():
+				return
+			}
+			peers := n.Host.Network().Peers()
+			fmt.Printf("[Network] Connected peers: %d | Peerstore: %d\n",
+				len(peers), len(n.Host.Peerstore().Peers()))
+		}
+	}()
+
 	// --- 2. mDNS Discovery (LAN) ---
 	// Finds peers on the same local network with zero configuration.
 	mdnsService := mdns.NewMdnsService(n.Host, "agentmesh", &mdnsNotifee{h: n.Host})
@@ -264,7 +278,9 @@ func (m *mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := m.h.Connect(ctx, pi); err != nil {
-		fmt.Printf("[Discovery] mDNS connect failed: %v\n", err)
+		fmt.Printf("[Discovery] mDNS connect failed for %s: %v\n", pi.ID, err)
+	} else {
+		fmt.Printf("[Discovery] ✓ mDNS connected to local peer: %s\n", pi.ID)
 	}
 }
 
@@ -292,9 +308,14 @@ func (n *AgentNode) dhtPeerDiscoveryLoop(rd *routing.RoutingDiscovery) {
 				fmt.Printf("[Discovery] DHT found AgentMesh peer: %s\n", pi.ID)
 				ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
 				if err := n.Host.Connect(ctx, pi); err != nil {
-					fmt.Printf("[Discovery] Failed to connect to %s: %v\n", pi.ID, err)
+					// Print only the first line to avoid walls of relay errors
+					errStr := err.Error()
+					if idx := strings.Index(errStr, "\n"); idx != -1 {
+						errStr = errStr[:idx] + " (+ more)"
+					}
+					fmt.Printf("[Discovery] Could not reach %s: %s\n", pi.ID, errStr)
 				} else {
-					fmt.Printf("[Discovery] Connected to AgentMesh peer: %s\n", pi.ID)
+					fmt.Printf("[Discovery] ✓ Connected to AgentMesh peer: %s\n", pi.ID)
 				}
 				cancel()
 			}
