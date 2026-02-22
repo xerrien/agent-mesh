@@ -14,7 +14,6 @@ import (
 	"agentmesh/pkg/agent"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 func main() {
@@ -84,23 +83,19 @@ func main() {
 	}
 
 	fmt.Println("Starting Agent A...")
-	if err := agentA.Start("/ip4/127.0.0.1/tcp/0", ""); err != nil {
+	if err := agentA.Start("", "wss://relay.damus.io,wss://nos.lol"); err != nil {
 		log.Fatalf("Failed to start Agent A: %v", err)
 	}
 	defer agentA.Stop()
 
 	fmt.Println("Starting Agent B...")
-	if err := agentB.Start("/ip4/127.0.0.1/tcp/0", ""); err != nil {
+	if err := agentB.Start("", "wss://relay.damus.io,wss://nos.lol"); err != nil {
 		log.Fatalf("Failed to start Agent B: %v", err)
 	}
 	defer agentB.Stop()
 
-	// Connect B to A
-	addrA := fmt.Sprintf("%s/p2p/%s", agentA.Host.Addrs()[0], agentA.Host.ID())
-	fmt.Printf("[Demo] Agent A address: %s\n", addrA)
-
-	info, _ := peer.AddrInfoFromString(addrA)
-	_ = agentB.Host.Connect(context.Background(), *info)
+	// Connect B to A by Nostr pubkey
+	_ = agentB.ConnectPeer(context.Background(), agentA.NodeID())
 
 	// --- Reputation Check Simulation ---
 	agentB.SetReputationChecker(func(pid string, eth string) (bool, error) {
@@ -124,11 +119,13 @@ func main() {
 			discoveryMsg := agent.KnowledgeDiscoveryMsg{
 				Query:     "Need audit info for treasury",
 				Tags:      []string{"audit", "treasury"},
-				Requester: agentB.Host.ID().String(),
+				Requester: agentB.NodeID(),
 				Timestamp: time.Now().UnixMilli(),
 			}
 			msgBytes, _ := jsonMarshal(discoveryMsg)
-			agentB.KnowledgeTopic.Publish(context.Background(), msgBytes)
+			var msg agent.KnowledgeDiscoveryMsg
+			_ = json.Unmarshal(msgBytes, &msg)
+			_ = agentB.PublishKnowledgeQuery(msg)
 		}
 	})
 
@@ -139,11 +136,10 @@ func main() {
 	discoveryMsg := agent.KnowledgeDiscoveryMsg{
 		Query:     "Need audit info for treasury",
 		Tags:      []string{"audit", "treasury"},
-		Requester: agentB.Host.ID().String(),
+		Requester: agentB.NodeID(),
 		Timestamp: time.Now().UnixMilli(),
 	}
-	msgBytes, _ := jsonMarshal(discoveryMsg)
-	agentB.KnowledgeTopic.Publish(context.Background(), msgBytes)
+	_ = agentB.PublishKnowledgeQuery(discoveryMsg)
 
 	// Keep alive
 	sig := make(chan os.Signal, 1)

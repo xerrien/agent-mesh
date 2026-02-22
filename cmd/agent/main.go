@@ -18,17 +18,13 @@ import (
 func main() {
 	dbPath := flag.String("db", "agent_metadata.db", "Path to metadata database")
 	workspace := flag.String("workspace", "./workspace", "Path to OpenClaw workspace")
-	listenAddr := flag.String("listen", "/ip4/0.0.0.0/tcp/4001", "libp2p listen address (TCP; QUIC is derived automatically)")
-	minRelayReservations := flag.Int("relay-min", 1, "Minimum number of active relay reservations to maintain")
-	maxRelayReservations := flag.Int("relay-max", 2, "Maximum number of active relay reservations to maintain")
+	listenAddr := flag.String("listen", "", "Deprecated. Ignored in Nostr mode.")
 	rpcURL := flag.String("rpc", "", "Ethereum RPC URL (e.g., Alchemy/Infura)")
 	escrowAddr := flag.String("escrow", "", "TaskEscrow contract address")
 	marketAddr := flag.String("market", "", "KnowledgeMarket contract address")
 	identAddr := flag.String("identity", "", "ERC-8004 IdentityRegistry address")
 	reputAddr := flag.String("reputation", "", "ERC-8004 ReputationRegistry address")
-	bootstrapNodes := flag.String("bootstrap", "", "Comma-separated list of bootstrap multiaddrs")
-	autoConnect := flag.Bool("auto-connect", false, "Auto-connect to discovered peers (DHT/mDNS)")
-
+	bootstrapNodes := flag.String("bootstrap", "", "Comma-separated Nostr relay URLs (wss://...)")
 	flag.Parse()
 
 	// Validation
@@ -49,9 +45,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize node: %v", err)
 	}
-	node.SetRelayReservationPolicy(*minRelayReservations, *maxRelayReservations)
-	node.SetAutoPeerConnect(*autoConnect)
-
 	// Setup ERC8004 Client (Addresses provided via CLI)
 	node.ERCClient = agent.NewERC8004Client(*rpcURL, *identAddr, *reputAddr, "0x0000000000000000000000000000000000000000")
 
@@ -86,9 +79,9 @@ func main() {
 		log.Fatalf("Failed to start node: %v", err)
 	}
 
-	fmt.Printf("Node started! ID: %s\n", node.Host.ID())
-	fmt.Printf("Addresses: %v\n", node.Host.Addrs())
-	fmt.Println("Operator console: connect <multiaddr|peerID> | peers | help")
+	fmt.Printf("Node started! Nostr pubkey: %s\n", node.NodeID())
+	fmt.Printf("Relays: %v\n", node.RelayURLs())
+	fmt.Println("Operator console: connect <pubkey> | peers | help")
 	go operatorConsole(node)
 
 	sig := make(chan os.Signal, 1)
@@ -109,9 +102,9 @@ func operatorConsole(node *agent.AgentNode) {
 		parts := strings.Fields(line)
 		switch strings.ToLower(parts[0]) {
 		case "help":
-			fmt.Println("Commands: connect <multiaddr|peerID>, peers, help")
+			fmt.Println("Commands: connect <pubkey>, peers, help")
 		case "peers":
-			peers := node.Host.Network().Peers()
+			peers := node.ConnectedPeers()
 			if len(peers) == 0 {
 				fmt.Println("[Operator] No connected peers")
 				continue
@@ -122,7 +115,7 @@ func operatorConsole(node *agent.AgentNode) {
 			}
 		case "connect":
 			if len(parts) < 2 {
-				fmt.Println("[Operator] Usage: connect <multiaddr|peerID>")
+				fmt.Println("[Operator] Usage: connect <pubkey>")
 				continue
 			}
 			target := parts[1]

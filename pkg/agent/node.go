@@ -2,12 +2,8 @@ package agent
 
 import (
 	"context"
-	"crypto/ed25519"
-	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,27 +11,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/libp2p/go-libp2p"
-	dht "github.com/libp2p/go-libp2p-kad-dht"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	"github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/libp2p/go-libp2p/core/host"
-	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/protocol"
-	"github.com/libp2p/go-libp2p/p2p/discovery/mdns"
-	"github.com/libp2p/go-libp2p/p2p/discovery/routing"
-	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
-	relayclient "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/client"
-	relayv2 "github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
-	"github.com/multiformats/go-multiaddr"
+	"fiatjaf.com/nostr"
 )
 
 const (
-	DiscoveryTopic          = "agentmesh:discovery"
-	KnowledgeDiscoveryTopic = "agentmesh:knowledge_discovery"
-	TaskProtocol            = "/agentmesh/task/1.0.0"
-	MemoryProtocol          = "/agentmesh/memory/1.0.0"
+	KindCapability      nostr.Kind = 30201
+	KindKnowledgeQuery  nostr.Kind = 30202
+	KindTaskRequest     nostr.Kind = 30203
+	KindTaskResponse    nostr.Kind = 30204
+	identityKeyFileName            = "nostr.key"
 )
 
 type CapabilityCallback func(peerID string, capability AgentCapability)
@@ -45,24 +29,23 @@ type CapabilityCallback func(peerID string, capability AgentCapability)
 type ReputationChecker func(peerID string, ethAddress string) (bool, error)
 
 type AgentNode struct {
-	Host              host.Host
-	PubSub            *pubsub.PubSub
-	DiscoveryTopic    *pubsub.Topic
-	KnowledgeTopic    *pubsub.Topic
-	Memory            *MemoryStore
-	Watcher           *EventWatcher
-	ERCClient         *ERC8004Client
-	DHT               *dht.IpfsDHT
-	onCapCallbacks    []CapabilityCallback
-	reputationChecker ReputationChecker
+	Memory    *MemoryStore
+	Watcher   *EventWatcher
+	ERCClient *ERC8004Client
+	workspace string
+	ctx       context.Context
+	cancel    context.CancelFunc
+	secretKey nostr.SecretKey
+	nodeID    string
+
 	mu                sync.RWMutex
-	ctx               context.Context
-	cancel            context.CancelFunc
-	privKey           crypto.PrivKey
-	workspacePath     string // used to persist identity key
-	minRelayResv      int
-	maxRelayResv      int
-	autoPeerConnect   bool
+	reputationChecker ReputationChecker
+	onCapCallbacks    []CapabilityCallback
+	relayURLs         []string
+	relays            []*nostr.Relay
+	seenEvents        map[nostr.ID]struct{}
+	knownPeers        map[string]struct{}
+	pendingTasks      map[string]chan AgentMessage
 }
 
 func NewAgentNode(dbPath string, workspacePath string) (*AgentNode, error) {
@@ -72,609 +55,22 @@ func NewAgentNode(dbPath string, workspacePath string) (*AgentNode, error) {
 		cancel()
 		return nil, err
 	}
+
 	return &AgentNode{
-		ctx:             ctx,
-		cancel:          cancel,
-		Memory:          store,
-		workspacePath:   workspacePath,
-		minRelayResv:    1,
-		maxRelayResv:    2,
-		autoPeerConnect: false,
+		Memory:       store,
+		workspace:    workspacePath,
+		ctx:          ctx,
+		cancel:       cancel,
+		seenEvents:   make(map[nostr.ID]struct{}),
+		knownPeers:   make(map[string]struct{}),
+		pendingTasks: make(map[string]chan AgentMessage),
 	}, nil
 }
 
-// SetReputationChecker sets a custom function that is called to verify an agent's reputation.
 func (n *AgentNode) SetReputationChecker(checker ReputationChecker) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.reputationChecker = checker
-}
-
-// SetRelayReservationPolicy configures the minimum and maximum number of relay reservations to keep.
-func (n *AgentNode) SetRelayReservationPolicy(minReservations, maxReservations int) {
-	if minReservations < 0 {
-		minReservations = 0
-	}
-	if maxReservations < minReservations {
-		maxReservations = minReservations
-	}
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.minRelayResv = minReservations
-	n.maxRelayResv = maxReservations
-}
-
-// SetAutoPeerConnect controls whether discovered peers are auto-dialed.
-func (n *AgentNode) SetAutoPeerConnect(enabled bool) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	n.autoPeerConnect = enabled
-}
-
-func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
-	// --- 1. Persistent Identity ---
-	// Load or generate a persistent private key so the peer ID survives restarts.
-	priv, err := n.loadOrCreateKey()
-	if err != nil {
-		return fmt.Errorf("failed to load/create identity key: %w", err)
-	}
-	n.privKey = priv
-
-	// Resource Manager for DoS protection
-	limiter := rcmgr.NewFixedLimiter(rcmgr.InfiniteLimits)
-	rm, err := rcmgr.NewResourceManager(limiter)
-	if err != nil {
-		return fmt.Errorf("failed to create resource manager: %w", err)
-	}
-
-	// Use only explicitly configured bootstrap peers.
-	var bootstrapPeers []peer.AddrInfo
-	if bootstrapNodes != "" {
-		for _, s := range strings.Split(bootstrapNodes, ",") {
-			addr, err := multiaddr.NewMultiaddr(strings.TrimSpace(s))
-			if err != nil {
-				fmt.Printf("[Bootstrap] Invalid multiaddr %q: %v\n", s, err)
-				continue
-			}
-			info, err := peer.AddrInfoFromP2pAddr(addr)
-			if err != nil {
-				fmt.Printf("[Bootstrap] Could not parse peer addr %q: %v\n", s, err)
-				continue
-			}
-			bootstrapPeers = append(bootstrapPeers, *info)
-		}
-	}
-	if len(bootstrapPeers) == 0 {
-		fmt.Println("[Bootstrap] Warning: no bootstrap peers configured; WAN discovery/relay may be limited")
-	}
-
-	// Derive a QUIC listen address from the TCP listen addr for better NAT traversal.
-	// e.g., /ip4/0.0.0.0/tcp/4001 -> /ip4/0.0.0.0/udp/4001/quic-v1
-	quicAddr := strings.Replace(listenAddr, "/tcp/", "/udp/", 1) + "/quic-v1"
-
-	h, err := libp2p.New(
-		libp2p.ListenAddrStrings(
-			listenAddr, // TCP
-			quicAddr,   // QUIC-v1 (better NAT traversal)
-		),
-		libp2p.Identity(priv),
-		libp2p.ResourceManager(rm),
-		libp2p.NATPortMap(),  // UPnP/NAT-PMP: open ports automatically
-		libp2p.EnableRelay(), // Act as a relay for other NAT'd peers (if we have a public IP)
-		libp2p.EnableRelayService(relayv2.WithResources(relayv2.DefaultResources())), // Accept relay reservations / relay traffic
-		libp2p.EnableHolePunching(), // DCUtR: attempt direct connection after relay intro
-		// Use bootstrap peers as initial relay candidates; once AgentMesh nodes
-		// with public IPs are discovered, they replace this dependency entirely.
-		libp2p.EnableAutoRelayWithPeerSource(
-			func(ctx context.Context, num int) <-chan peer.AddrInfo {
-				ch := make(chan peer.AddrInfo)
-				go func() {
-					defer close(ch)
-					for _, p := range bootstrapPeers {
-						select {
-						case ch <- p:
-						case <-ctx.Done():
-							return
-						}
-					}
-				}()
-				return ch
-			},
-		),
-	)
-	if err != nil {
-		return err
-	}
-	n.Host = h
-
-	// Initialize DHT in server mode so this node also helps route others
-	kdht, err := dht.New(n.ctx, h, dht.Mode(dht.ModeServer))
-	if err != nil {
-		return fmt.Errorf("failed to create DHT: %w", err)
-	}
-	n.DHT = kdht
-
-	// Connect to bootstrap peers concurrently BEFORE bootstrapping the DHT
-	var wg sync.WaitGroup
-	for _, p := range bootstrapPeers {
-		wg.Add(1)
-		go func(pi peer.AddrInfo) {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
-			defer cancel()
-			if err := h.Connect(ctx, pi); err != nil {
-				fmt.Printf("[Bootstrap] Failed to connect to %s: %v\n", pi.ID, err)
-			} else {
-				fmt.Printf("[Bootstrap] Connected to %s\n", pi.ID)
-			}
-		}(p)
-	}
-	wg.Wait()
-
-	// Bootstrap DHT AFTER peers are connected so it has routes to walk
-	if err := kdht.Bootstrap(n.ctx); err != nil {
-		return fmt.Errorf("failed to bootstrap DHT: %w", err)
-	}
-	fmt.Printf("[Discovery] DHT bootstrap complete, %d peers in peerstore\n", len(h.Peerstore().Peers()))
-
-	ps, err := pubsub.NewGossipSub(n.ctx, n.Host)
-	if err != nil {
-		return err
-	}
-	n.PubSub = ps
-
-	topic, err := n.PubSub.Join(DiscoveryTopic)
-	if err != nil {
-		return err
-	}
-	n.DiscoveryTopic = topic
-
-	kTopic, err := n.PubSub.Join(KnowledgeDiscoveryTopic)
-	if err != nil {
-		return err
-	}
-	n.KnowledgeTopic = kTopic
-
-	sub, err := n.DiscoveryTopic.Subscribe()
-	if err != nil {
-		return err
-	}
-
-	kSub, err := n.KnowledgeTopic.Subscribe()
-	if err != nil {
-		return err
-	}
-
-	go n.discoveryLoop(sub)
-	go n.knowledgeDiscoveryLoop(kSub)
-	n.SetupHandlers()
-	go n.relayReservationLoop(bootstrapPeers)
-
-	// Periodic peer count summary so the user can see network health at a glance
-	go func() {
-		for {
-			select {
-			case <-time.After(30 * time.Second):
-			case <-n.ctx.Done():
-				return
-			}
-			peers := n.Host.Network().Peers()
-			fmt.Printf("[Network] Connected peers: %d | Peerstore: %d\n",
-				len(peers), len(n.Host.Peerstore().Peers()))
-		}
-	}()
-
-	n.mu.RLock()
-	autoConnect := n.autoPeerConnect
-	n.mu.RUnlock()
-
-	if autoConnect {
-		// --- 2. mDNS Discovery (LAN) ---
-		// Finds peers on the same local network with zero configuration.
-		mdnsService := mdns.NewMdnsService(n.Host, "agentmesh", &mdnsNotifee{h: n.Host})
-		if err := mdnsService.Start(); err != nil {
-			fmt.Printf("[Discovery] mDNS failed to start (LAN discovery unavailable): %v\n", err)
-		} else {
-			fmt.Println("[Discovery] mDNS started - auto-connect enabled")
-		}
-	} else {
-		fmt.Println("[Discovery] Auto-connect disabled; connect peers manually via operator command")
-	}
-
-	// --- 3. DHT Namespace Advertising (WAN) ---
-	// Advertise under "agentmesh" in the IPFS DHT so any node can find us
-	// without needing dedicated AgentMesh bootstrap nodes.
-	rd := routing.NewRoutingDiscovery(kdht)
-	go func() {
-		// Advertise ourselves — retry every 10 minutes as TTL approaches expiry
-		for {
-			ttl, err := rd.Advertise(n.ctx, "agentmesh")
-			wait := ttl * 4 / 5
-			if err != nil {
-				fmt.Printf("[Discovery] DHT advertise error: %v\n", err)
-				wait = 15 * time.Second
-			}
-			if wait < 5*time.Second {
-				wait = 5 * time.Second
-			}
-			select {
-			case <-n.ctx.Done():
-				return
-			case <-time.After(wait):
-			}
-		}
-	}()
-	if autoConnect {
-		go n.dhtPeerDiscoveryLoop(rd)
-	}
-
-	return nil
-}
-
-// ConnectPeer dials a peer by multiaddr or peer ID.
-// For bare peer IDs it resolves addresses via DHT when available.
-func (n *AgentNode) ConnectPeer(ctx context.Context, target string) error {
-	target = strings.TrimSpace(target)
-	if target == "" {
-		return fmt.Errorf("empty target")
-	}
-
-	info, err := peer.AddrInfoFromString(target)
-	if err != nil {
-		pid, decErr := peer.Decode(target)
-		if decErr != nil {
-			return fmt.Errorf("invalid target %q: %w", target, err)
-		}
-		if n.DHT != nil {
-			pi, findErr := n.DHT.FindPeer(ctx, pid)
-			if findErr != nil {
-				return fmt.Errorf("could not resolve peer %s via DHT: %w", pid, findErr)
-			}
-			info = &pi
-		} else {
-			info = &peer.AddrInfo{ID: pid}
-		}
-	}
-
-	if len(info.Addrs) > 0 {
-		n.Host.Peerstore().AddAddrs(info.ID, info.Addrs, time.Hour)
-	}
-	return n.Host.Connect(ctx, *info)
-}
-
-func (n *AgentNode) relayReservationLoop(candidates []peer.AddrInfo) {
-	n.mu.RLock()
-	minRes := n.minRelayResv
-	maxRes := n.maxRelayResv
-	n.mu.RUnlock()
-	if maxRes == 0 {
-		return
-	}
-
-	type reservationState struct {
-		expiresAt time.Time
-	}
-	reserved := make(map[peer.ID]reservationState)
-
-	maintain := func() {
-		now := time.Now()
-		for pid, rs := range reserved {
-			// Consider reservation stale shortly before expiry so renewal can happen proactively.
-			if now.After(rs.expiresAt.Add(-2 * time.Minute)) {
-				delete(reserved, pid)
-			}
-		}
-
-		desired := minRes
-		if desired < 1 {
-			desired = 1
-		}
-		if desired > maxRes {
-			desired = maxRes
-		}
-		if len(reserved) >= desired {
-			return
-		}
-
-		for _, pi := range sortedUniquePeers(candidates) {
-			if len(reserved) >= desired || len(reserved) >= maxRes {
-				return
-			}
-			if _, ok := reserved[pi.ID]; ok {
-				continue
-			}
-
-			ctx, cancel := context.WithTimeout(n.ctx, 12*time.Second)
-			if n.Host.Network().Connectedness(pi.ID) != network.Connected {
-				if err := n.Host.Connect(ctx, pi); err != nil {
-					cancel()
-					continue
-				}
-			}
-
-			resv, err := relayclient.Reserve(ctx, n.Host, pi)
-			cancel()
-			if err != nil {
-				continue
-			}
-
-			if len(resv.Addrs) > 0 {
-				ttl := time.Until(resv.Expiration)
-				if ttl > 0 {
-					n.Host.Peerstore().AddAddrs(pi.ID, resv.Addrs, ttl)
-				}
-			}
-			reserved[pi.ID] = reservationState{expiresAt: resv.Expiration}
-			fmt.Printf("[Relay] Reserved slot on %s (expires %s)\n", pi.ID, resv.Expiration.Format(time.RFC3339))
-			if hasRelayCircuitAddr(resv.Addrs) {
-				if n.waitForAdvertisedRelayAddr(pi.ID, 6*time.Second) {
-					fmt.Printf("[Relay] Reachability confirmed via relay %s (circuit addr advertised)\n", pi.ID)
-				} else {
-					fmt.Printf("[Relay] Reservation active on %s, but circuit addr not yet advertised locally\n", pi.ID)
-				}
-			} else {
-				fmt.Printf("[Relay] Reservation active on %s, but relay did not return circuit addresses\n", pi.ID)
-			}
-		}
-
-		if len(reserved) < desired {
-			fmt.Printf("[Relay] Warning: only %d/%d relay reservations active\n", len(reserved), desired)
-		}
-	}
-
-	// Initial attempt quickly after startup, then periodic maintenance.
-	select {
-	case <-time.After(3 * time.Second):
-	case <-n.ctx.Done():
-		return
-	}
-	maintain()
-
-	ticker := time.NewTicker(45 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			maintain()
-		case <-n.ctx.Done():
-			return
-		}
-	}
-}
-
-func sortedUniquePeers(peers []peer.AddrInfo) []peer.AddrInfo {
-	out := make([]peer.AddrInfo, 0, len(peers))
-	seen := make(map[peer.ID]struct{}, len(peers))
-	for _, pi := range peers {
-		if pi.ID == "" {
-			continue
-		}
-		if _, ok := seen[pi.ID]; ok {
-			continue
-		}
-		seen[pi.ID] = struct{}{}
-		out = append(out, pi)
-	}
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].ID.String() < out[j].ID.String()
-	})
-	return out
-}
-
-func hasRelayCircuitAddr(addrs []multiaddr.Multiaddr) bool {
-	for _, a := range addrs {
-		if strings.Contains(a.String(), "/p2p-circuit") {
-			return true
-		}
-	}
-	return false
-}
-
-func (n *AgentNode) waitForAdvertisedRelayAddr(relayID peer.ID, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	needle := "/p2p/" + relayID.String() + "/p2p-circuit"
-	for time.Now().Before(deadline) {
-		if hasRelayCircuitAddr(n.Host.Addrs()) {
-			for _, a := range n.Host.Addrs() {
-				if strings.Contains(a.String(), needle) || strings.Contains(a.String(), "/p2p-circuit") {
-					return true
-				}
-			}
-		}
-		select {
-		case <-time.After(400 * time.Millisecond):
-		case <-n.ctx.Done():
-			return false
-		}
-	}
-	return false
-}
-
-// mdnsNotifee connects to peers discovered via mDNS.
-type mdnsNotifee struct{ h host.Host }
-
-func (m *mdnsNotifee) HandlePeerFound(pi peer.AddrInfo) {
-	fmt.Printf("[Discovery] mDNS found peer: %s\n", pi.ID)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := m.h.Connect(ctx, pi); err != nil {
-		fmt.Printf("[Discovery] mDNS connect failed for %s: %v\n", pi.ID, err)
-	} else {
-		fmt.Printf("[Discovery] ✓ mDNS connected to local peer: %s\n", pi.ID)
-	}
-}
-
-// dhtPeerDiscoveryLoop finds AgentMesh peers via DHT namespace and connects to them.
-func (n *AgentNode) dhtPeerDiscoveryLoop(rd *routing.RoutingDiscovery) {
-	// Wait a moment for DHT to settle after bootstrap
-	select {
-	case <-time.After(5 * time.Second):
-	case <-n.ctx.Done():
-		return
-	}
-
-	for {
-		peersCh, err := rd.FindPeers(n.ctx, "agentmesh")
-		if err != nil {
-			fmt.Printf("[Discovery] DHT FindPeers error: %v\n", err)
-		} else {
-			for pi := range peersCh {
-				if pi.ID == n.Host.ID() {
-					continue // skip self
-				}
-				if n.Host.Network().Connectedness(pi.ID) == network.Connected {
-					continue // already connected
-				}
-				fmt.Printf("[Discovery] DHT found AgentMesh peer: %s\n", pi.ID)
-				ctx, cancel := context.WithTimeout(n.ctx, 10*time.Second)
-				if err := n.Host.Connect(ctx, pi); err != nil {
-					// Print only the first line to avoid walls of relay errors
-					errStr := err.Error()
-					if idx := strings.Index(errStr, "\n"); idx != -1 {
-						errStr = errStr[:idx] + " (+ more)"
-					}
-					fmt.Printf("[Discovery] Could not reach %s: %s\n", pi.ID, errStr)
-				} else {
-					fmt.Printf("[Discovery] ✓ Connected to AgentMesh peer: %s\n", pi.ID)
-				}
-				cancel()
-			}
-		}
-		// Re-scan every 60s
-		select {
-		case <-time.After(60 * time.Second):
-		case <-n.ctx.Done():
-			return
-		}
-	}
-}
-
-// loadOrCreateKey loads a persistent Ed25519 key from disk, or generates and saves a new one.
-func (n *AgentNode) loadOrCreateKey() (crypto.PrivKey, error) {
-	keyPath := filepath.Join(n.workspacePath, "identity.key")
-
-	data, err := os.ReadFile(keyPath)
-	if err == nil {
-		// Key exists — decode and return it
-		kBytes, err := crypto.UnmarshalPrivateKey(data)
-		if err == nil {
-			fmt.Printf("[Identity] Loaded existing key from %s\n", keyPath)
-			return kBytes, nil
-		}
-	}
-
-	// Generate new key
-	priv, _, err := crypto.GenerateKeyPair(crypto.Ed25519, -1)
-	if err != nil {
-		return nil, err
-	}
-
-	// Persist to disk
-	encoded, err := crypto.MarshalPrivateKey(priv)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(keyPath, encoded, 0600); err != nil {
-		// Non-fatal: we still have a key for this session
-		fmt.Printf("[Identity] Warning: could not save key to %s: %v\n", keyPath, err)
-	} else {
-		fmt.Printf("[Identity] Generated new key, saved to %s\n", keyPath)
-	}
-	return priv, nil
-}
-
-func (n *AgentNode) discoveryLoop(sub *pubsub.Subscription) {
-	for {
-		msg, err := sub.Next(n.ctx)
-		if err != nil {
-			return
-		}
-
-		if msg.ReceivedFrom == n.Host.ID() {
-			continue
-		}
-
-		var packet SignedPacket
-		if err := json.Unmarshal(msg.Data, &packet); err != nil {
-			continue
-		}
-
-		// Verify signature
-		if !n.verifySignature(packet) {
-			fmt.Printf("[Security] Rejected packet from %s: invalid signature\n", packet.PeerID)
-			continue
-		}
-
-		// Data is now a JSON string, parse it
-		var data struct {
-			Capability AgentCapability `json:"capability"`
-			EthAddress string          `json:"ethAddress,omitempty"`
-		}
-		if err := json.Unmarshal([]byte(packet.Data), &data); err != nil {
-			continue
-		}
-
-		// Reputation check (if configured)
-		n.mu.RLock()
-		checker := n.reputationChecker
-		n.mu.RUnlock()
-
-		if checker != nil && data.EthAddress != "" {
-			reputable, err := checker(packet.PeerID, data.EthAddress)
-			if err != nil || !reputable {
-				fmt.Printf("[Reputation] Rejected agent %s (Eth: %s): low or invalid reputation\n", packet.PeerID, data.EthAddress)
-				continue
-			}
-		}
-
-		n.mu.RLock()
-		callbacks := make([]CapabilityCallback, len(n.onCapCallbacks))
-		copy(callbacks, n.onCapCallbacks)
-		n.mu.RUnlock()
-
-		for _, cb := range callbacks {
-			cb(packet.PeerID, data.Capability)
-		}
-	}
-}
-
-// signData signs the data using the node's private key.
-func (n *AgentNode) signData(data []byte) (string, error) {
-	rawKey, err := n.privKey.Raw()
-	if err != nil {
-		return "", err
-	}
-	// Ed25519 private key is 64 bytes (seed + public key), but crypto/ed25519 expects 64 bytes
-	privKey := ed25519.PrivateKey(rawKey)
-	sig := ed25519.Sign(privKey, data)
-	return base64.StdEncoding.EncodeToString(sig), nil
-}
-
-// verifySignature verifies the signature on a SignedPacket.
-func (n *AgentNode) verifySignature(packet SignedPacket) bool {
-	// Decode the PeerID to get the public key
-	pid, err := peer.Decode(packet.PeerID)
-	if err != nil {
-		return false
-	}
-
-	pubKey, err := pid.ExtractPublicKey()
-	if err != nil {
-		return false
-	}
-
-	rawPub, err := pubKey.Raw()
-	if err != nil {
-		return false
-	}
-
-	sig, err := base64.StdEncoding.DecodeString(packet.Signature)
-	if err != nil {
-		return false
-	}
-
-	// Data is now stored as the exact JSON string that was signed
-	return ed25519.Verify(rawPub, []byte(packet.Data), sig)
 }
 
 func (n *AgentNode) OnCapability(cb CapabilityCallback) {
@@ -683,231 +79,447 @@ func (n *AgentNode) OnCapability(cb CapabilityCallback) {
 	n.onCapCallbacks = append(n.onCapCallbacks, cb)
 }
 
+func (n *AgentNode) NodeID() string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	return n.nodeID
+}
+
+func (n *AgentNode) RelayURLs() []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	out := make([]string, len(n.relayURLs))
+	copy(out, n.relayURLs)
+	return out
+}
+
+func (n *AgentNode) ConnectedPeers() []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	out := make([]string, 0, len(n.knownPeers))
+	for p := range n.knownPeers {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (n *AgentNode) Start(_ string, bootstrapNodes string) error {
+	sk, err := n.loadOrCreateKey()
+	if err != nil {
+		return fmt.Errorf("failed to load/create identity key: %w", err)
+	}
+
+	relayURLs := parseRelayURLs(bootstrapNodes)
+	if len(relayURLs) == 0 {
+		return fmt.Errorf("no nostr relays configured; pass -bootstrap as comma-separated wss:// relay URLs")
+	}
+
+	n.mu.Lock()
+	n.secretKey = sk
+	n.nodeID = sk.Public().Hex()
+	n.relayURLs = relayURLs
+	n.mu.Unlock()
+
+	for _, url := range relayURLs {
+		relay, err := nostr.RelayConnect(n.ctx, url, nostr.RelayOptions{})
+		if err != nil {
+			fmt.Printf("[Nostr] Relay connect failed %s: %v\n", url, err)
+			continue
+		}
+		fmt.Printf("[Nostr] Connected relay: %s\n", url)
+		n.mu.Lock()
+		n.relays = append(n.relays, relay)
+		n.mu.Unlock()
+		go n.subscribeRelay(relay)
+	}
+
+	if len(n.Relays()) == 0 {
+		return fmt.Errorf("failed to connect to any nostr relay")
+	}
+
+	go n.logNetworkHealth()
+	return nil
+}
+
+func (n *AgentNode) Stop() error {
+	n.cancel()
+	n.mu.RLock()
+	relays := append([]*nostr.Relay(nil), n.relays...)
+	n.mu.RUnlock()
+	for _, r := range relays {
+		r.Close()
+	}
+	return nil
+}
+
+func (n *AgentNode) Relays() []*nostr.Relay {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	out := make([]*nostr.Relay, len(n.relays))
+	copy(out, n.relays)
+	return out
+}
+
+func (n *AgentNode) ConnectPeer(_ context.Context, target string) error {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return fmt.Errorf("empty target")
+	}
+	pk, err := nostr.PubKeyFromHex(target)
+	if err != nil {
+		return fmt.Errorf("connect expects nostr pubkey hex: %w", err)
+	}
+	peerID := pk.Hex()
+	n.mu.Lock()
+	n.knownPeers[peerID] = struct{}{}
+	n.mu.Unlock()
+	return nil
+}
+
 func (n *AgentNode) AdvertiseCapability(capability AgentCapability) {
 	n.AdvertiseCapabilityWithEth(capability, "")
 }
 
-// AdvertiseCapabilityWithEth advertises with an optional Ethereum address for reputation lookup.
 func (n *AgentNode) AdvertiseCapabilityWithEth(capability AgentCapability, ethAddress string) {
 	go func() {
-		ticker := time.NewTicker(5 * time.Second)
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
-
-		broadcast := func() {
-			data := map[string]interface{}{
+		for {
+			payload := map[string]interface{}{
 				"capability": capability,
+				"ethAddress": ethAddress,
 				"timestamp":  time.Now().UnixMilli(),
 			}
-			if ethAddress != "" {
-				data["ethAddress"] = ethAddress
-			}
-
-			dataBytes, _ := json.Marshal(data)
-			sig, err := n.signData(dataBytes)
-			if err != nil {
-				fmt.Printf("[Signing Error] %v\n", err)
-				return
-			}
-
-			packet := SignedPacket{
-				Data:      string(dataBytes), // Store as string for deterministic verification
-				PeerID:    n.Host.ID().String(),
-				Signature: sig,
-			}
-			bytes, _ := json.Marshal(packet)
-			n.DiscoveryTopic.Publish(n.ctx, bytes)
-		}
-
-		broadcast()
-		for {
+			_ = n.publishJSONEvent(KindCapability, nil, payload)
 			select {
 			case <-n.ctx.Done():
 				return
 			case <-ticker.C:
-				broadcast()
 			}
 		}
 	}()
 }
 
-func (n *AgentNode) SetupHandlers() {
-	n.Host.SetStreamHandler(protocol.ID(TaskProtocol), func(s network.Stream) {
-		defer s.Close()
-
-		data, err := readLP(s)
-		if err != nil {
-			return
-		}
-
-		var msg AgentMessage
-		if err := json.Unmarshal(data, &msg); err != nil {
-			return
-		}
-
-		if msg.Type == "task" {
-			response := AgentMessage{
-				Type: "response",
-				Payload: map[string]interface{}{
-					"status":  "success",
-					"agent":   n.Host.ID().String(),
-					"message": "Task processed successfully",
-				},
-				Sender:    n.Host.ID().String(),
-				Timestamp: time.Now().UnixMilli(),
-			}
-			respBytes, _ := json.Marshal(response)
-			writeLP(s, respBytes)
-		}
-	})
-
-	n.Host.SetStreamHandler(protocol.ID(MemoryProtocol), func(s network.Stream) {
-		defer s.Close()
-
-		data, err := readLP(s)
-		if err != nil {
-			return
-		}
-
-		var req struct {
-			Type      string `json:"type"`
-			TopicHash string `json:"topicHash"`
-		}
-		if err := json.Unmarshal(data, &req); err != nil {
-			return
-		}
-
-		if req.Type == "get_memory" {
-			chunk, err := n.Memory.GetMemory(req.TopicHash)
-			if err == nil && chunk != nil {
-				respBytes, _ := json.Marshal(chunk)
-				writeLP(s, respBytes)
-			}
-		}
-	})
+func (n *AgentNode) PublishKnowledgeQuery(query KnowledgeDiscoveryMsg) error {
+	return n.publishJSONEvent(KindKnowledgeQuery, nil, query)
 }
 
-func (n *AgentNode) knowledgeDiscoveryLoop(sub *pubsub.Subscription) {
-	for {
-		msg, err := sub.Next(n.ctx)
-		if err != nil {
-			return
-		}
-
-		if msg.ReceivedFrom == n.Host.ID() {
-			continue
-		}
-
-		var query KnowledgeDiscoveryMsg
-		if err := json.Unmarshal(msg.Data, &query); err != nil {
-			continue
-		}
-
-		fmt.Printf("[Memory] Received discovery query: %q from %s\n", query.Query, query.Requester)
-
-		// Check local memory for matches
-		var matches []MemoryChunk
-		n.Memory.mu.RLock()
-		for _, tag := range query.Tags {
-			newMatches, err := n.Memory.Search(tag)
-			if err != nil {
-				continue
-			}
-			matches = append(matches, newMatches...)
-		}
-		n.Memory.mu.RUnlock()
-
-		if len(matches) > 0 {
-			fmt.Printf("[Memory] Found %d potential matches for %q\n", len(matches), query.Query)
-			// TODO: Implementation of KnowledgeOffers for automated P2P trading
-		}
-	}
-}
-
-func (n *AgentNode) SendTask(ctx context.Context, targetAddr string, payload interface{}) (interface{}, error) {
-	info, err := peer.AddrInfoFromString(targetAddr)
-	var pid peer.ID
+func (n *AgentNode) SendTask(ctx context.Context, target string, payload interface{}) (interface{}, error) {
+	pk, err := nostr.PubKeyFromHex(strings.TrimSpace(target))
 	if err != nil {
-		pid, err = peer.Decode(targetAddr)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		pid = info.ID
-		n.Host.Peerstore().AddAddrs(pid, info.Addrs, time.Hour)
+		return nil, fmt.Errorf("target must be nostr pubkey hex: %w", err)
 	}
-
-	s, err := n.Host.NewStream(ctx, pid, protocol.ID(TaskProtocol))
-	if err != nil {
-		return nil, err
-	}
-	defer s.Close()
+	reqID := nostr.Generate().Hex()
 
 	msg := AgentMessage{
 		Type:      "task",
 		Payload:   payload,
-		Sender:    n.Host.ID().String(),
+		Sender:    n.NodeID(),
 		Timestamp: time.Now().UnixMilli(),
 	}
 
-	bytes, _ := json.Marshal(msg)
-	if err := writeLP(s, bytes); err != nil {
+	respCh := make(chan AgentMessage, 1)
+	n.mu.Lock()
+	n.pendingTasks[reqID] = respCh
+	n.mu.Unlock()
+	defer func() {
+		n.mu.Lock()
+		delete(n.pendingTasks, reqID)
+		n.mu.Unlock()
+	}()
+
+	tags := nostr.Tags{
+		nostr.Tag{"p", pk.Hex()},
+		nostr.Tag{"req", reqID},
+		nostr.Tag{"from", n.NodeID()},
+	}
+	if err := n.publishJSONEvent(KindTaskRequest, tags, msg); err != nil {
 		return nil, err
 	}
 
-	respBytes, err := readLP(s)
+	select {
+	case resp := <-respCh:
+		return resp.Payload, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (n *AgentNode) subscribeRelay(relay *nostr.Relay) {
+	filter := nostr.Filter{
+		Kinds: []nostr.Kind{KindCapability, KindKnowledgeQuery, KindTaskRequest, KindTaskResponse},
+	}
+	sub, err := relay.Subscribe(n.ctx, filter, nostr.SubscriptionOptions{})
 	if err != nil {
-		return nil, err
+		fmt.Printf("[Nostr] Subscribe failed on %s: %v\n", relay.URL, err)
+		return
 	}
 
-	var resp AgentMessage
-	if err := json.Unmarshal(respBytes, &resp); err != nil {
-		return nil, err
+	for evt := range sub.Events {
+		if evt.PubKey.Hex() == n.NodeID() {
+			continue
+		}
+		if n.seen(evt.ID) {
+			continue
+		}
+		n.handleEvent(evt)
+	}
+}
+
+func (n *AgentNode) handleEvent(evt nostr.Event) {
+	switch evt.Kind {
+	case KindCapability:
+		n.handleCapabilityEvent(evt)
+	case KindKnowledgeQuery:
+		n.handleKnowledgeQueryEvent(evt)
+	case KindTaskRequest:
+		n.handleTaskRequestEvent(evt)
+	case KindTaskResponse:
+		n.handleTaskResponseEvent(evt)
+	}
+}
+
+func (n *AgentNode) handleCapabilityEvent(evt nostr.Event) {
+	var data struct {
+		Capability AgentCapability `json:"capability"`
+		EthAddress string          `json:"ethAddress,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(evt.Content), &data); err != nil {
+		return
 	}
 
-	return resp.Payload, nil
+	peerID := evt.PubKey.Hex()
+	n.mu.Lock()
+	n.knownPeers[peerID] = struct{}{}
+	checker := n.reputationChecker
+	callbacks := append([]CapabilityCallback(nil), n.onCapCallbacks...)
+	n.mu.Unlock()
+
+	if checker != nil && data.EthAddress != "" {
+		ok, err := checker(peerID, data.EthAddress)
+		if err != nil || !ok {
+			return
+		}
+	}
+
+	for _, cb := range callbacks {
+		cb(peerID, data.Capability)
+	}
 }
 
-func (n *AgentNode) Stop() error {
-	n.cancel()
-	return n.Host.Close()
+func (n *AgentNode) handleKnowledgeQueryEvent(evt nostr.Event) {
+	var query KnowledgeDiscoveryMsg
+	if err := json.Unmarshal([]byte(evt.Content), &query); err != nil {
+		return
+	}
+	fmt.Printf("[Memory] Received discovery query: %q from %s\n", query.Query, query.Requester)
+
+	var matches []MemoryChunk
+	n.Memory.mu.RLock()
+	for _, tag := range query.Tags {
+		items, err := n.Memory.Search(tag)
+		if err == nil {
+			matches = append(matches, items...)
+		}
+	}
+	n.Memory.mu.RUnlock()
+	if len(matches) > 0 {
+		fmt.Printf("[Memory] Found %d potential matches for %q\n", len(matches), query.Query)
+	}
 }
 
-// Helpers
+func (n *AgentNode) handleTaskRequestEvent(evt nostr.Event) {
+	targetTag := evt.Tags.Find("p")
+	if targetTag == nil || len(targetTag) < 2 || targetTag[1] != n.NodeID() {
+		return
+	}
 
-func readLP(r io.Reader) ([]byte, error) {
-	br := &byteReader{r}
-	length, err := binary.ReadUvarint(br)
+	var msg AgentMessage
+	if err := json.Unmarshal([]byte(evt.Content), &msg); err != nil {
+		return
+	}
+	if msg.Type != "task" {
+		return
+	}
+
+	reqTag := evt.Tags.Find("req")
+	if reqTag == nil || len(reqTag) < 2 {
+		return
+	}
+	fromTag := evt.Tags.Find("from")
+	if fromTag == nil || len(fromTag) < 2 {
+		return
+	}
+	requester := fromTag[1]
+	if _, err := nostr.PubKeyFromHex(requester); err != nil {
+		return
+	}
+
+	resp := AgentMessage{
+		Type: "response",
+		Payload: map[string]interface{}{
+			"status":  "success",
+			"agent":   n.NodeID(),
+			"message": "Task processed successfully",
+		},
+		Sender:    n.NodeID(),
+		Timestamp: time.Now().UnixMilli(),
+	}
+
+	tags := nostr.Tags{
+		nostr.Tag{"p", requester},
+		nostr.Tag{"req", reqTag[1]},
+		nostr.Tag{"from", n.NodeID()},
+	}
+	_ = n.publishJSONEvent(KindTaskResponse, tags, resp)
+}
+
+func (n *AgentNode) handleTaskResponseEvent(evt nostr.Event) {
+	targetTag := evt.Tags.Find("p")
+	if targetTag == nil || len(targetTag) < 2 || targetTag[1] != n.NodeID() {
+		return
+	}
+	reqTag := evt.Tags.Find("req")
+	if reqTag == nil || len(reqTag) < 2 {
+		return
+	}
+
+	var msg AgentMessage
+	if err := json.Unmarshal([]byte(evt.Content), &msg); err != nil {
+		return
+	}
+
+	n.mu.RLock()
+	ch := n.pendingTasks[reqTag[1]]
+	n.mu.RUnlock()
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- msg:
+	default:
+	}
+}
+
+func (n *AgentNode) publishJSONEvent(kind nostr.Kind, tags nostr.Tags, payload interface{}) error {
+	body, err := json.Marshal(payload)
 	if err != nil {
-		return nil, err
-	}
-
-	buf := make([]byte, length)
-	_, err = io.ReadFull(r, buf)
-	return buf, err
-}
-
-func writeLP(w io.Writer, data []byte) error {
-	buf := make([]byte, binary.MaxVarintLen64)
-	n := binary.PutUvarint(buf, uint64(len(data)))
-	if _, err := w.Write(buf[:n]); err != nil {
 		return err
 	}
-	_, err := w.Write(data)
-	return err
+	evt := nostr.Event{
+		CreatedAt: nostr.Now(),
+		Kind:      kind,
+		Tags:      tags,
+		Content:   string(body),
+	}
+	n.mu.RLock()
+	sk := n.secretKey
+	relays := append([]*nostr.Relay(nil), n.relays...)
+	n.mu.RUnlock()
+	if err := evt.Sign(sk); err != nil {
+		return err
+	}
+	if len(relays) == 0 {
+		return fmt.Errorf("no connected relays")
+	}
+
+	var wg sync.WaitGroup
+	var okCount int
+	var errMu sync.Mutex
+	errs := make([]string, 0, len(relays))
+	for _, relay := range relays {
+		wg.Add(1)
+		go func(r *nostr.Relay) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(n.ctx, 8*time.Second)
+			defer cancel()
+			if err := r.Publish(ctx, evt); err != nil {
+				errMu.Lock()
+				errs = append(errs, fmt.Sprintf("%s: %v", r.URL, err))
+				errMu.Unlock()
+				return
+			}
+			errMu.Lock()
+			okCount++
+			errMu.Unlock()
+		}(relay)
+	}
+	wg.Wait()
+
+	if okCount == 0 {
+		return fmt.Errorf("publish failed on all relays: %s", strings.Join(errs, "; "))
+	}
+	return nil
 }
 
-type byteReader struct {
-	io.Reader
+func (n *AgentNode) seen(id nostr.ID) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if _, ok := n.seenEvents[id]; ok {
+		return true
+	}
+	n.seenEvents[id] = struct{}{}
+	return false
 }
 
-func (br *byteReader) ReadByte() (byte, error) {
-	var b [1]byte
-	n, err := br.Reader.Read(b[:])
-	if n == 1 {
-		return b[0], nil
+func (n *AgentNode) loadOrCreateKey() (nostr.SecretKey, error) {
+	keyPath := filepath.Join(n.workspace, identityKeyFileName)
+	if b, err := os.ReadFile(keyPath); err == nil {
+		hexKey := strings.TrimSpace(string(b))
+		sk, err := nostr.SecretKeyFromHex(hexKey)
+		if err == nil {
+			fmt.Printf("[Identity] Loaded existing key from %s\n", keyPath)
+			return sk, nil
+		}
 	}
-	if err == nil {
-		err = io.EOF
+
+	sk := nostr.Generate()
+	if err := os.WriteFile(keyPath, []byte(sk.Hex()), 0600); err != nil {
+		fmt.Printf("[Identity] Warning: could not save key to %s: %v\n", keyPath, err)
+	} else {
+		fmt.Printf("[Identity] Generated new key, saved to %s\n", keyPath)
 	}
-	return 0, err
+	return sk, nil
+}
+
+func (n *AgentNode) logNetworkHealth() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			n.mu.RLock()
+			relayCount := len(n.relays)
+			peerCount := len(n.knownPeers)
+			n.mu.RUnlock()
+			fmt.Printf("[Network] Connected relays: %d | Known peers: %d\n", relayCount, peerCount)
+		case <-n.ctx.Done():
+			return
+		}
+	}
+}
+
+func parseRelayURLs(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, p := range parts {
+		u := strings.TrimSpace(p)
+		if u == "" {
+			continue
+		}
+		if !strings.HasPrefix(u, "ws://") && !strings.HasPrefix(u, "wss://") {
+			continue
+		}
+		if _, ok := seen[u]; ok {
+			continue
+		}
+		seen[u] = struct{}{}
+		out = append(out, u)
+	}
+	return out
 }
