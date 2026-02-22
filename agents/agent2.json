@@ -5,7 +5,7 @@
   "services": [
     {
       "name": "A2A",
-      "endpoint": "p2p://12D3KooWKpnAT1KBGZLGFHLsYiaTew4zeZ5SrphSbvueZ3bS1vQj",
+      "endpoint": "nostr://<YOUR_NOSTR_PUBKEY_HEX>",
       "version": "1.0.0"
     }
   ],

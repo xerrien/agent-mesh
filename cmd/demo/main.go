@@ -70,8 +70,8 @@ func main() {
 				if err == nil {
 					peerId, _ := reputationClient.GetMetadata(agentId, "peerId")
 					if peerId != "" {
-						fmt.Printf("[Agent A] Successfully resolved PeerID: %s\n", peerId)
-						fmt.Println("[Agent A] Reacting to on-chain knowledge demand via P2P...")
+						fmt.Printf("[Agent A] Successfully resolved Nostr pubkey: %s\n", peerId)
+						fmt.Println("[Agent A] Reacting to on-chain knowledge demand via Nostr...")
 					}
 				}
 			}

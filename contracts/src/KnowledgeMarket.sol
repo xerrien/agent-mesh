@@ -30,7 +30,7 @@ contract KnowledgeMarket {
     event KnowledgeProvided(
         uint256 indexed requestId,
         address indexed provider,
-        string responsePath // e.g. a P2P topic or hash
+        string responsePath // e.g. a Nostr event id, URI, or hash
     );
 
     /**

@@ -54,16 +54,16 @@ func main() {
 	}, func(q agent.KnowledgeRequestedEvent) {
 		fmt.Printf("[Watcher] New Knowledge Request on-chain: %s (Bounty: %s)\n", q.Topic, q.Bounty)
 
-		// Dynamic Identity Resolution: wallet -> agentId -> peerId
+		// Dynamic Identity Resolution: wallet -> agentId -> pubkey
 		if node.ERCClient != nil {
 			agentId, err := node.ERCClient.GetAgentIdByWallet(q.Requester)
 			if err == nil {
 				peerId, err := node.ERCClient.ResolvePeerId(agentId)
 				if err == nil && peerId != "" {
-					fmt.Printf("[Discovery] Resolved PeerID for %s: %s\n", q.Requester.Hex(), peerId)
-					// Trigger P2P delivery here...
+					fmt.Printf("[Discovery] Resolved Nostr pubkey for %s: %s\n", q.Requester.Hex(), peerId)
+					// Trigger Nostr delivery here...
 				} else {
-					fmt.Printf("[Discovery] Could not resolve PeerID for %s: %v\n", q.Requester.Hex(), err)
+					fmt.Printf("[Discovery] Could not resolve Nostr pubkey for %s: %v\n", q.Requester.Hex(), err)
 				}
 			}
 		}
