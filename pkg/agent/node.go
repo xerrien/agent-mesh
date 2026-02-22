@@ -62,6 +62,7 @@ type AgentNode struct {
 	workspacePath     string // used to persist identity key
 	minRelayResv      int
 	maxRelayResv      int
+	autoPeerConnect   bool
 }
 
 func NewAgentNode(dbPath string, workspacePath string) (*AgentNode, error) {
@@ -72,12 +73,13 @@ func NewAgentNode(dbPath string, workspacePath string) (*AgentNode, error) {
 		return nil, err
 	}
 	return &AgentNode{
-		ctx:           ctx,
-		cancel:        cancel,
-		Memory:        store,
-		workspacePath: workspacePath,
-		minRelayResv:  1,
-		maxRelayResv:  2,
+		ctx:             ctx,
+		cancel:          cancel,
+		Memory:          store,
+		workspacePath:   workspacePath,
+		minRelayResv:    1,
+		maxRelayResv:    2,
+		autoPeerConnect: false,
 	}, nil
 }
 
@@ -100,6 +102,13 @@ func (n *AgentNode) SetRelayReservationPolicy(minReservations, maxReservations i
 	defer n.mu.Unlock()
 	n.minRelayResv = minReservations
 	n.maxRelayResv = maxReservations
+}
+
+// SetAutoPeerConnect controls whether discovered peers are auto-dialed.
+func (n *AgentNode) SetAutoPeerConnect(enabled bool) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.autoPeerConnect = enabled
 }
 
 func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
@@ -255,13 +264,21 @@ func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
 		}
 	}()
 
-	// --- 2. mDNS Discovery (LAN) ---
-	// Finds peers on the same local network with zero configuration.
-	mdnsService := mdns.NewMdnsService(n.Host, "agentmesh", &mdnsNotifee{h: n.Host})
-	if err := mdnsService.Start(); err != nil {
-		fmt.Printf("[Discovery] mDNS failed to start (LAN discovery unavailable): %v\n", err)
+	n.mu.RLock()
+	autoConnect := n.autoPeerConnect
+	n.mu.RUnlock()
+
+	if autoConnect {
+		// --- 2. mDNS Discovery (LAN) ---
+		// Finds peers on the same local network with zero configuration.
+		mdnsService := mdns.NewMdnsService(n.Host, "agentmesh", &mdnsNotifee{h: n.Host})
+		if err := mdnsService.Start(); err != nil {
+			fmt.Printf("[Discovery] mDNS failed to start (LAN discovery unavailable): %v\n", err)
+		} else {
+			fmt.Println("[Discovery] mDNS started - auto-connect enabled")
+		}
 	} else {
-		fmt.Println("[Discovery] mDNS started — will discover peers on local network")
+		fmt.Println("[Discovery] Auto-connect disabled; connect peers manually via operator command")
 	}
 
 	// --- 3. DHT Namespace Advertising (WAN) ---
@@ -272,19 +289,57 @@ func (n *AgentNode) Start(listenAddr string, bootstrapNodes string) error {
 		// Advertise ourselves — retry every 10 minutes as TTL approaches expiry
 		for {
 			ttl, err := rd.Advertise(n.ctx, "agentmesh")
+			wait := ttl * 4 / 5
 			if err != nil {
 				fmt.Printf("[Discovery] DHT advertise error: %v\n", err)
+				wait = 15 * time.Second
+			}
+			if wait < 5*time.Second {
+				wait = 5 * time.Second
 			}
 			select {
 			case <-n.ctx.Done():
 				return
-			case <-time.After(ttl * 4 / 5): // re-advertise at 80% of TTL
+			case <-time.After(wait):
 			}
 		}
 	}()
-	go n.dhtPeerDiscoveryLoop(rd)
+	if autoConnect {
+		go n.dhtPeerDiscoveryLoop(rd)
+	}
 
 	return nil
+}
+
+// ConnectPeer dials a peer by multiaddr or peer ID.
+// For bare peer IDs it resolves addresses via DHT when available.
+func (n *AgentNode) ConnectPeer(ctx context.Context, target string) error {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return fmt.Errorf("empty target")
+	}
+
+	info, err := peer.AddrInfoFromString(target)
+	if err != nil {
+		pid, decErr := peer.Decode(target)
+		if decErr != nil {
+			return fmt.Errorf("invalid target %q: %w", target, err)
+		}
+		if n.DHT != nil {
+			pi, findErr := n.DHT.FindPeer(ctx, pid)
+			if findErr != nil {
+				return fmt.Errorf("could not resolve peer %s via DHT: %w", pid, findErr)
+			}
+			info = &pi
+		} else {
+			info = &peer.AddrInfo{ID: pid}
+		}
+	}
+
+	if len(info.Addrs) > 0 {
+		n.Host.Peerstore().AddAddrs(info.ID, info.Addrs, time.Hour)
+	}
+	return n.Host.Connect(ctx, *info)
 }
 
 func (n *AgentNode) relayReservationLoop(candidates []peer.AddrInfo) {
@@ -351,6 +406,15 @@ func (n *AgentNode) relayReservationLoop(candidates []peer.AddrInfo) {
 			}
 			reserved[pi.ID] = reservationState{expiresAt: resv.Expiration}
 			fmt.Printf("[Relay] Reserved slot on %s (expires %s)\n", pi.ID, resv.Expiration.Format(time.RFC3339))
+			if hasRelayCircuitAddr(resv.Addrs) {
+				if n.waitForAdvertisedRelayAddr(pi.ID, 6*time.Second) {
+					fmt.Printf("[Relay] Reachability confirmed via relay %s (circuit addr advertised)\n", pi.ID)
+				} else {
+					fmt.Printf("[Relay] Reservation active on %s, but circuit addr not yet advertised locally\n", pi.ID)
+				}
+			} else {
+				fmt.Printf("[Relay] Reservation active on %s, but relay did not return circuit addresses\n", pi.ID)
+			}
 		}
 
 		if len(reserved) < desired {
@@ -395,6 +459,35 @@ func sortedUniquePeers(peers []peer.AddrInfo) []peer.AddrInfo {
 		return out[i].ID.String() < out[j].ID.String()
 	})
 	return out
+}
+
+func hasRelayCircuitAddr(addrs []multiaddr.Multiaddr) bool {
+	for _, a := range addrs {
+		if strings.Contains(a.String(), "/p2p-circuit") {
+			return true
+		}
+	}
+	return false
+}
+
+func (n *AgentNode) waitForAdvertisedRelayAddr(relayID peer.ID, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	needle := "/p2p/" + relayID.String() + "/p2p-circuit"
+	for time.Now().Before(deadline) {
+		if hasRelayCircuitAddr(n.Host.Addrs()) {
+			for _, a := range n.Host.Addrs() {
+				if strings.Contains(a.String(), needle) || strings.Contains(a.String(), "/p2p-circuit") {
+					return true
+				}
+			}
+		}
+		select {
+		case <-time.After(400 * time.Millisecond):
+		case <-n.ctx.Done():
+			return false
+		}
+	}
+	return false
 }
 
 // mdnsNotifee connects to peers discovered via mDNS.

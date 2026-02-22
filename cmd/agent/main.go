@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
+	"time"
 
 	"agentmesh/pkg/agent"
 )
@@ -24,6 +27,7 @@ func main() {
 	identAddr := flag.String("identity", "", "ERC-8004 IdentityRegistry address")
 	reputAddr := flag.String("reputation", "", "ERC-8004 ReputationRegistry address")
 	bootstrapNodes := flag.String("bootstrap", "", "Comma-separated list of bootstrap multiaddrs")
+	autoConnect := flag.Bool("auto-connect", false, "Auto-connect to discovered peers (DHT/mDNS)")
 
 	flag.Parse()
 
@@ -46,6 +50,7 @@ func main() {
 		log.Fatalf("Failed to initialize node: %v", err)
 	}
 	node.SetRelayReservationPolicy(*minRelayReservations, *maxRelayReservations)
+	node.SetAutoPeerConnect(*autoConnect)
 
 	// Setup ERC8004 Client (Addresses provided via CLI)
 	node.ERCClient = agent.NewERC8004Client(*rpcURL, *identAddr, *reputAddr, "0x0000000000000000000000000000000000000000")
@@ -83,6 +88,8 @@ func main() {
 
 	fmt.Printf("Node started! ID: %s\n", node.Host.ID())
 	fmt.Printf("Addresses: %v\n", node.Host.Addrs())
+	fmt.Println("Operator console: connect <multiaddr|peerID> | peers | help")
+	go operatorConsole(node)
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -90,4 +97,45 @@ func main() {
 
 	node.Stop()
 	fmt.Println("Node stopped.")
+}
+
+func operatorConsole(node *agent.AgentNode) {
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		switch strings.ToLower(parts[0]) {
+		case "help":
+			fmt.Println("Commands: connect <multiaddr|peerID>, peers, help")
+		case "peers":
+			peers := node.Host.Network().Peers()
+			if len(peers) == 0 {
+				fmt.Println("[Operator] No connected peers")
+				continue
+			}
+			fmt.Printf("[Operator] Connected peers (%d):\n", len(peers))
+			for _, p := range peers {
+				fmt.Printf("- %s\n", p)
+			}
+		case "connect":
+			if len(parts) < 2 {
+				fmt.Println("[Operator] Usage: connect <multiaddr|peerID>")
+				continue
+			}
+			target := parts[1]
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			err := node.ConnectPeer(ctx, target)
+			cancel()
+			if err != nil {
+				fmt.Printf("[Operator] Connect failed: %v\n", err)
+				continue
+			}
+			fmt.Printf("[Operator] Connected to %s\n", target)
+		default:
+			fmt.Printf("[Operator] Unknown command: %s (try: help)\n", parts[0])
+		}
+	}
 }
