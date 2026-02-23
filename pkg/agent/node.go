@@ -17,9 +17,9 @@ import (
 
 const (
 	KindCapability      nostr.Kind = 30201
-	KindKnowledgeQuery  nostr.Kind = 30202
-	KindTaskRequest     nostr.Kind = 30203
-	KindTaskResponse    nostr.Kind = 30204
+	KindKnowledgeQuery  nostr.Kind = 9002
+	KindTaskRequest     nostr.Kind = 9003
+	KindTaskResponse    nostr.Kind = 9004
 	identityKeyFileName            = "nostr.key"
 	meshTagName                    = "t"
 	meshTagValue                   = "agentmesh"
@@ -265,7 +265,10 @@ func (n *AgentNode) publishCapability(capability AgentCapability, ethAddress str
 		"ethAddress": ethAddress,
 		"timestamp":  time.Now().UnixMilli(),
 	}
-	err := n.publishJSONEvent(KindCapability, nil, payload)
+	tags := nostr.Tags{
+		nostr.Tag{"d", capability.Name},
+	}
+	err := n.publishJSONEvent(KindCapability, tags, payload)
 	if err == nil {
 		n.mu.Lock()
 		n.localCapabilities[name] = capability
