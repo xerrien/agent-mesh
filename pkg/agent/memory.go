@@ -2,6 +2,7 @@ package agent
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,6 +30,19 @@ type MemoryStore struct {
 	mu            sync.RWMutex
 }
 
+type InboxEvent struct {
+	EventID    string `json:"eventId"`
+	RelayURL   string `json:"relayUrl"`
+	Kind       int    `json:"kind"`
+	Sender     string `json:"sender"`
+	CreatedAt  int64  `json:"createdAt"`
+	ReceivedAt int64  `json:"receivedAt"`
+	ProcessedAt int64 `json:"processedAt"`
+	ProcessedBy string `json:"processedBy,omitempty"`
+	Content    string `json:"content"`
+	TagsJSON   string `json:"tagsJson"`
+}
+
 func NewMemoryStore(dbPath string, workspacePath string) (*MemoryStore, error) {
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -52,9 +66,39 @@ func NewMemoryStore(dbPath string, workspacePath string) (*MemoryStore, error) {
 		FOREIGN KEY(topic_hash) REFERENCES remote_knowledge(topic_hash)
 	);
 	CREATE INDEX IF NOT EXISTS idx_remote_tags_tag ON remote_tags(tag);
+
+	CREATE TABLE IF NOT EXISTS inbox_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		event_id TEXT NOT NULL UNIQUE,
+		relay_url TEXT,
+		kind INTEGER NOT NULL,
+		sender TEXT,
+		created_at INTEGER NOT NULL,
+		received_at INTEGER NOT NULL,
+		processed_at INTEGER NOT NULL DEFAULT 0,
+		processed_by TEXT,
+		content TEXT,
+		tags_json TEXT
+	);
+	CREATE INDEX IF NOT EXISTS idx_inbox_events_received_at ON inbox_events(received_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_inbox_events_kind ON inbox_events(kind);
+	CREATE INDEX IF NOT EXISTS idx_inbox_events_processed_at ON inbox_events(processed_at);
+
+	CREATE TABLE IF NOT EXISTS relay_cursors (
+		relay_url TEXT PRIMARY KEY,
+		last_created_at INTEGER NOT NULL,
+		last_event_id TEXT,
+		updated_at INTEGER NOT NULL
+	);
 	`
 	if _, err := db.Exec(schema); err != nil {
 		return nil, fmt.Errorf("failed to create schema: %w", err)
+	}
+	if _, err := db.Exec("ALTER TABLE inbox_events ADD COLUMN processed_at INTEGER NOT NULL DEFAULT 0"); err != nil && !isDuplicateColumnError(err) {
+		return nil, fmt.Errorf("failed to migrate inbox_events.processed_at: %w", err)
+	}
+	if _, err := db.Exec("ALTER TABLE inbox_events ADD COLUMN processed_by TEXT"); err != nil && !isDuplicateColumnError(err) {
+		return nil, fmt.Errorf("failed to migrate inbox_events.processed_by: %w", err)
 	}
 
 	return &MemoryStore{
@@ -197,10 +241,191 @@ func (s *MemoryStore) GetMemory(topic string) (*MemoryChunk, error) {
 	}, nil
 }
 
+func (s *MemoryStore) SaveInboxEvent(event InboxEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`
+		INSERT OR IGNORE INTO inbox_events
+		(event_id, relay_url, kind, sender, created_at, received_at, content, tags_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.EventID,
+		event.RelayURL,
+		event.Kind,
+		event.Sender,
+		event.CreatedAt,
+		event.ReceivedAt,
+		event.Content,
+		event.TagsJSON,
+	)
+	return err
+}
+
+func (s *MemoryStore) ListInboxEvents(limit int) ([]InboxEvent, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(`
+		SELECT event_id, relay_url, kind, sender, created_at, received_at, processed_at, COALESCE(processed_by, ''), content, tags_json
+		FROM inbox_events
+		ORDER BY received_at DESC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]InboxEvent, 0, limit)
+	for rows.Next() {
+		var ev InboxEvent
+		if err := rows.Scan(
+			&ev.EventID,
+			&ev.RelayURL,
+			&ev.Kind,
+			&ev.Sender,
+			&ev.CreatedAt,
+			&ev.ReceivedAt,
+			&ev.ProcessedAt,
+			&ev.ProcessedBy,
+			&ev.Content,
+			&ev.TagsJSON,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, ev)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) ListUnreadInboxEvents(limit int) ([]InboxEvent, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	rows, err := s.db.Query(`
+		SELECT event_id, relay_url, kind, sender, created_at, received_at, processed_at, COALESCE(processed_by, ''), content, tags_json
+		FROM inbox_events
+		WHERE processed_at = 0
+		ORDER BY received_at ASC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]InboxEvent, 0, limit)
+	for rows.Next() {
+		var ev InboxEvent
+		if err := rows.Scan(
+			&ev.EventID,
+			&ev.RelayURL,
+			&ev.Kind,
+			&ev.Sender,
+			&ev.CreatedAt,
+			&ev.ReceivedAt,
+			&ev.ProcessedAt,
+			&ev.ProcessedBy,
+			&ev.Content,
+			&ev.TagsJSON,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, ev)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) AckInboxEvent(eventID string, processedBy string) (bool, error) {
+	eventID = strings.TrimSpace(eventID)
+	if eventID == "" {
+		return false, fmt.Errorf("event id cannot be empty")
+	}
+	processedBy = strings.TrimSpace(processedBy)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	res, err := s.db.Exec(`
+		UPDATE inbox_events
+		SET processed_at = ?, processed_by = ?
+		WHERE event_id = ? AND processed_at = 0`,
+		time.Now().UnixMilli(),
+		processedBy,
+		eventID,
+	)
+	if err != nil {
+		return false, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
+func (s *MemoryStore) GetRelayCursor(relayURL string) (int64, string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var ts int64
+	var eventID string
+	err := s.db.QueryRow(`
+		SELECT last_created_at, COALESCE(last_event_id, '')
+		FROM relay_cursors
+		WHERE relay_url = ?`, relayURL).Scan(&ts, &eventID)
+	if err == sql.ErrNoRows {
+		return 0, "", nil
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	return ts, eventID, nil
+}
+
+func (s *MemoryStore) SaveRelayCursor(relayURL string, lastCreatedAt int64, lastEventID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`
+		INSERT INTO relay_cursors (relay_url, last_created_at, last_event_id, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(relay_url) DO UPDATE SET
+			last_created_at = excluded.last_created_at,
+			last_event_id = excluded.last_event_id,
+			updated_at = excluded.updated_at`,
+		relayURL, lastCreatedAt, lastEventID, time.Now().UnixMilli(),
+	)
+	return err
+}
+
 // Compress simulates context distillation (e.g., using an LLM).
 // In a real implementation, this would call an LLM to summarize logs.
 func Compress(topic string, rawData interface{}) string {
 	return fmt.Sprintf("Distilled context for %s: %v", topic, rawData)
+}
+
+func mustJSON(v interface{}) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+func isDuplicateColumnError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }
 
 // KnowledgeDiscoveryMsg is sent over Gossipsub to find flexible memory.

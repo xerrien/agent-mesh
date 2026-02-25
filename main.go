@@ -74,7 +74,7 @@ func main() {
 
 	fmt.Printf("Node started! Nostr pubkey: %s\n", node.NodeID())
 	fmt.Printf("Relays: %v\n", node.RelayURLs())
-	fmt.Println("Operator console: connect <pubkey> | msg <pubkey> <text> (encrypted) | task <pubkey> <json-or-text> | query <query text> [| tag1,tag2] | advertise <name> [description] | advertise-loop <name> [ttlSec] [description] | unadvertise <name> | ask <pubkey> <task> | askall <task> | peers | help")
+	fmt.Println("Operator console: connect <pubkey> | msg <pubkey> <text> (encrypted) | task <pubkey> <json-or-text> | query <query text> [| tag1,tag2] | advertise <name> [description] | advertise-loop <name> [ttlSec] [description] | unadvertise <name> | ask <pubkey> <task> | askall <task> | gossip <pubkey> [limit] | inbox [limit] | inbox-read [limit] | inbox-ack <eventID> | peers | help")
 	go operatorConsole(node)
 
 	sig := make(chan os.Signal, 1)
@@ -105,6 +105,10 @@ func operatorConsole(node *agent.AgentNode) {
 			fmt.Println("  unadvertise <name>")
 			fmt.Println("  ask <pubkey> <task>")
 			fmt.Println("  askall <task>")
+			fmt.Println("  gossip <pubkey> [limit]")
+			fmt.Println("  inbox [limit]")
+			fmt.Println("  inbox-read [limit]")
+			fmt.Println("  inbox-ack <eventID>")
 			fmt.Println("  peers")
 			fmt.Println("  help")
 		case "peers":
@@ -268,6 +272,92 @@ func operatorConsole(node *agent.AgentNode) {
 			for _, p := range providers {
 				fmt.Printf("- %s\n", p)
 			}
+		case "gossip":
+			if len(parts) < 2 {
+				fmt.Println("[Operator] Usage: gossip <pubkey> [limit]")
+				continue
+			}
+			target := parts[1]
+			limit := 64
+			if len(parts) > 2 {
+				if n, err := strconv.Atoi(strings.TrimSpace(parts[2])); err == nil && n > 0 {
+					limit = n
+				}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			peers, err := node.RequestPeerExchange(ctx, target, limit)
+			cancel()
+			if err != nil {
+				fmt.Printf("[Operator] Gossip failed: %v\n", err)
+				continue
+			}
+			if len(peers) == 0 {
+				fmt.Printf("[Operator] %s returned no peer hints\n", target)
+				continue
+			}
+			fmt.Printf("[Operator] Received %d peer hints from %s:\n", len(peers), target)
+			for _, peer := range peers {
+				fmt.Printf("- %s relays=%d caps=%d\n", peer.PubKey, len(peer.Relays), len(peer.Capabilities))
+			}
+		case "inbox":
+			limit := 20
+			if len(parts) > 1 {
+				if n, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil && n > 0 {
+					limit = n
+				}
+			}
+			items, err := node.InboxEvents(limit)
+			if err != nil {
+				fmt.Printf("[Operator] Inbox read failed: %v\n", err)
+				continue
+			}
+			if len(items) == 0 {
+				fmt.Println("[Operator] Inbox is empty")
+				continue
+			}
+			fmt.Printf("[Operator] Inbox events (%d):\n", len(items))
+			for _, it := range items {
+				status := "pending"
+				if it.ProcessedAt > 0 {
+					status = fmt.Sprintf("acked@%d", it.ProcessedAt)
+				}
+				fmt.Printf("- kind=%d sender=%s relay=%s created=%d id=%s status=%s\n", it.Kind, it.Sender, it.RelayURL, it.CreatedAt, it.EventID, status)
+			}
+		case "inbox-read":
+			limit := 20
+			if len(parts) > 1 {
+				if n, err := strconv.Atoi(strings.TrimSpace(parts[1])); err == nil && n > 0 {
+					limit = n
+				}
+			}
+			items, err := node.UnreadInboxEvents(limit)
+			if err != nil {
+				fmt.Printf("[Operator] Inbox unread read failed: %v\n", err)
+				continue
+			}
+			if len(items) == 0 {
+				fmt.Println("[Operator] Inbox unread is empty")
+				continue
+			}
+			fmt.Printf("[Operator] Inbox unread events (%d):\n", len(items))
+			for _, it := range items {
+				fmt.Printf("- kind=%d sender=%s relay=%s created=%d id=%s\n", it.Kind, it.Sender, it.RelayURL, it.CreatedAt, it.EventID)
+			}
+		case "inbox-ack":
+			if len(parts) < 2 {
+				fmt.Println("[Operator] Usage: inbox-ack <eventID>")
+				continue
+			}
+			ok, err := node.AckInboxEvent(parts[1])
+			if err != nil {
+				fmt.Printf("[Operator] Inbox ack failed: %v\n", err)
+				continue
+			}
+			if !ok {
+				fmt.Printf("[Operator] Inbox ack no-op (not found or already acked): %s\n", parts[1])
+				continue
+			}
+			fmt.Printf("[Operator] Inbox event acked: %s\n", parts[1])
 		default:
 			fmt.Printf("[Operator] Unknown command: %s (try: help)\n", parts[0])
 		}
