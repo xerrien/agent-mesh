@@ -32,6 +32,13 @@ go build -o agentmesh .
 ./agentmesh
 ```
 
+Default runtime values:
+- `-rpc`: `https://mainnet.base.org`
+- `-escrow`: `0x591ee5158c94d736ce9bf544bc03247d14904061`
+- `-identity`: `0x8004A818BFB912233c491871b3d84c89A494BD9e`
+- `-reputation`: `0x8004B663056A597Dffe9eCcC1965A193B7388713`
+- `-bootstrap`: `wss://nos.lol`
+
 Node identity is a Nostr key in `<workspace>/nostr.key`.
 If missing, it is generated automatically on first start.
 
@@ -128,6 +135,15 @@ Use contracts only when you need settlement/disputes:
 - `contracts/src/DisputeResolution.sol`
 
 ERC-8004 identity/reputation integration is optional at runtime.
+
+Deployment address registry:
+- Base Mainnet (chainId 8453):
+  - `TaskEscrow` proxy: `0xE45b6a75051AFb109dd60D262D7AF111957487B1`
+  - `JuryPool` proxy: `0x8226a8E5eBf70FF51C2B34e33020D77CE212e710`
+  - `DisputeResolution` proxy: `0x8a86133923bd36823AF5A1920c100862a90c36cA`
+  - `TaskEscrow` implementation: `0x18B1AC90B4E3808F284d0d68c7ECB7B3e6F7F637`
+  - `JuryPool` implementation: `0xAAcf9A9525fe66030aFE3f776CfDAdC905b613EC`
+  - `DisputeResolution` implementation: `0x5a53Fba0D632371D1Fb878595F7c8d56a8e56090`
 
 ## Integration Notes
 

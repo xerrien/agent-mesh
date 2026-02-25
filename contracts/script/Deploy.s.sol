@@ -9,7 +9,12 @@ import "../src/DisputeResolution.sol";
 
 contract DeployScript is Script {
     function run() external {
-        vm.startBroadcast();
+        uint256 deployerPk = vm.envUint("PRIVATE_KEY");
+        address deployer = vm.addr(deployerPk);
+        address owner = vm.envOr("OWNER", deployer);
+        address reputationRegistry = vm.envOr("REPUTATION_REGISTRY", address(0));
+
+        vm.startBroadcast(deployerPk);
 
         // 1. Deploy implementations
         JuryPool juryImpl = new JuryPool();
@@ -45,7 +50,17 @@ contract DeployScript is Script {
         jury.setDisputeResolver(address(dispute));
         escrow.setDisputeResolver(address(dispute));
         escrow.setJuryPool(address(jury));
-        jury.setReputationRegistry(address(0)); // Placeholder for now
+        jury.setReputationRegistry(reputationRegistry);
+
+        if (owner != deployer) {
+            jury.transferOwnership(owner);
+            escrow.transferOwnership(owner);
+            dispute.transferOwnership(owner);
+        }
+
+        console.log("Deployer:", deployer);
+        console.log("Owner:", owner);
+        console.log("ReputationRegistry:", reputationRegistry);
 
         vm.stopBroadcast();
     }

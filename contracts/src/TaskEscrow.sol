@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
 import "./ProxyOnly.sol";
 
 /**
@@ -70,7 +70,7 @@ contract TaskEscrow is Initializable, ReentrancyGuardUpgradeable, OwnableUpgrade
 
     function initialize() external initializer onlyProxyCall {
         __ReentrancyGuard_init();
-        __Ownable_init(msg.sender);
+        __Ownable_init();
         __UUPSUpgradeable_init();
     }
 

@@ -46,8 +46,8 @@ go build -o agentmesh .
 
 These are already built in as defaults:
 
-- `-rpc`: `wss://base-sepolia.drpc.org`
-- `-escrow`: `0x591ee5158c94d736ce9bf544bc03247d14904061`
+- `-rpc`: `https://mainnet.base.org`
+- `-escrow`: `0xE45b6a75051AFb109dd60D262D7AF111957487B1`
 - `-identity`: `0x8004A818BFB912233c491871b3d84c89A494BD9e`
 - `-reputation`: `0x8004B663056A597Dffe9eCcC1965A193B7388713`
 - `-bootstrap`: `wss://nos.lol`
@@ -374,6 +374,57 @@ GOOS=darwin GOARCH=arm64 go build -o agentmesh-darwin-arm64 .
 - `pkg/agent/` node transport, messaging, memory, identity client
 - `contracts/src/` `TaskEscrow.sol`, `DisputeResolution.sol`, `JuryPool.sol`
 - `.github/workflows/releaser.yml` release pipeline
+
+## Contracts: Base Mainnet Deploy + Verify
+
+From `contracts/`:
+
+1. Prepare env vars (copy from `contracts/.env.example`):
+
+```bash
+export PRIVATE_KEY=0x...
+export BASE_MAINNET_RPC_URL=https://mainnet.base.org
+export ETHERSCAN_API_KEY=...
+# optional
+export OWNER=0x...
+export REPUTATION_REGISTRY=0x...
+```
+
+2. Dry-run (recommended):
+
+```bash
+forge script script/Deploy.s.sol:DeployScript --rpc-url $BASE_MAINNET_RPC_URL -vvvv
+```
+
+3. Deploy and verify on BaseScan:
+
+```bash
+forge script script/Deploy.s.sol:DeployScript \
+  --rpc-url $BASE_MAINNET_RPC_URL \
+  --broadcast \
+  --verify \
+  --etherscan-api-key $ETHERSCAN_API_KEY \
+  -vvvv
+```
+
+Notes:
+- Script deploys implementations + ERC1967 proxies and initializes via proxies.
+- `OWNER` defaults to deployer if unset.
+- `REPUTATION_REGISTRY` defaults to `address(0)` if unset.
+- After deployment, update the address registry section below.
+
+## Deployment Addresses
+
+Keep these values updated after every deployment.
+
+### Base Mainnet (chainId 8453)
+
+- `TaskEscrow` proxy: `0xE45b6a75051AFb109dd60D262D7AF111957487B1`
+- `JuryPool` proxy: `0x8226a8E5eBf70FF51C2B34e33020D77CE212e710`
+- `DisputeResolution` proxy: `0x8a86133923bd36823AF5A1920c100862a90c36cA`
+- `TaskEscrow` implementation: `0x18B1AC90B4E3808F284d0d68c7ECB7B3e6F7F637`
+- `JuryPool` implementation: `0xAAcf9A9525fe66030aFE3f776CfDAdC905b613EC`
+- `DisputeResolution` implementation: `0x5a53Fba0D632371D1Fb878595F7c8d56a8e56090`
 
 ## Security Notes
 
