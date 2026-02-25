@@ -123,4 +123,25 @@ contract DisputeFlowTest is Test {
             assertEq(j.correctVerdicts, 1);
         }
     }
+
+    function testCannotOpenMultipleDisputesForSameTask() public {
+        vm.prank(client);
+        uint256 taskId = escrow.createTask{value: 1 ether}(keccak256("task spec"));
+
+        vm.prank(worker);
+        escrow.acceptTask{value: 0.1 ether}(taskId);
+
+        vm.prank(worker);
+        escrow.submitResult(taskId, keccak256("result"));
+
+        vm.prank(client);
+        escrow.disputeResult(taskId);
+
+        vm.prank(client);
+        dispute.openDispute{value: 0.01 ether}(taskId);
+
+        vm.prank(worker);
+        vm.expectRevert("Dispute already exists for task");
+        dispute.openDispute{value: 0.01 ether}(taskId);
+    }
 }

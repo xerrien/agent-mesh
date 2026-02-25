@@ -11,6 +11,9 @@ contract AgentMeshTest is Test {
     TaskEscrow public escrow;
     JuryPool public pool;
     DisputeResolution public dispute;
+    TaskEscrow public escrowImpl;
+    JuryPool public poolImpl;
+    DisputeResolution public disputeImpl;
     
     address client = address(0x1);
     address worker = address(0x2);
@@ -19,9 +22,9 @@ contract AgentMeshTest is Test {
     address juror3 = address(0x5);
     
     function setUp() public {
-        TaskEscrow escrowImpl = new TaskEscrow();
-        JuryPool poolImpl = new JuryPool();
-        DisputeResolution disputeImpl = new DisputeResolution();
+        escrowImpl = new TaskEscrow();
+        poolImpl = new JuryPool();
+        disputeImpl = new DisputeResolution();
 
         ERC1967Proxy escrowProxy = new ERC1967Proxy(
             address(escrowImpl),
@@ -153,5 +156,35 @@ contract AgentMeshTest is Test {
         
         TaskEscrow.Task memory task = escrow.getTask(taskId);
         assertEq(uint(task.state), 4); // Disputed
+    }
+
+    function testDirectImplementationCallsRevert() public {
+        vm.expectRevert("ProxyOnly: direct call blocked");
+        escrowImpl.initialize();
+
+        vm.expectRevert("ProxyOnly: direct call blocked");
+        poolImpl.initialize();
+
+        vm.expectRevert("ProxyOnly: direct call blocked");
+        disputeImpl.initialize(address(escrow), address(pool));
+    }
+
+    function testCannotInitializeProxyTwice() public {
+        vm.expectRevert();
+        escrow.initialize();
+
+        vm.expectRevert();
+        pool.initialize();
+
+        vm.expectRevert();
+        dispute.initialize(address(escrow), address(pool));
+    }
+
+    function testOnlyOwnerCanUpgradeEscrow() public {
+        TaskEscrow newImpl = new TaskEscrow();
+
+        vm.prank(worker);
+        vm.expectRevert();
+        escrow.upgradeToAndCall(address(newImpl), bytes(""));
     }
 }

@@ -342,11 +342,11 @@ contract DisputeResolution is Initializable, ReentrancyGuardUpgradeable, Ownable
         return disputes[disputeId];
     }
     
-    function getRoundVotes(uint256 disputeId, uint256 round) external view returns (
+    function getRoundVotes(uint256 disputeId, uint256 round) external view onlyProxyCall returns (
         uint256 approveWorker,
         uint256 approveClient,
         bool resolved
-    ) onlyProxyCall {
+    ) {
         Round storage r = rounds[disputeId][round];
         return (r.approveWorkerCount, r.approveClientCount, r.resolved);
     }
