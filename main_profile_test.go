@@ -5,14 +5,14 @@ import (
 	"path/filepath"
 	"testing"
 
-	"agentmesh/pkg/agent"
+	"agentswarm/pkg/agent"
 )
 
 func TestLoadStartupProfile(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	p := filepath.Join(dir, "agentmesh.toml")
+	p := filepath.Join(dir, "agentswarm.toml")
 	content := `
 headless = true
 bootstrap = "wss://nos.lol"
@@ -87,3 +87,9 @@ func TestApplyStartupProfileNilSafe(t *testing.T) {
 		t.Fatalf("expected nil profile to be no-op, got %v", err)
 	}
 }
+
+
+
+
+
+

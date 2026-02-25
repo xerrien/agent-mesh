@@ -1,6 +1,6 @@
 {
   "type": "https://eips.ethereum.org/EIPS/eip-8004#registration-v1",
-  "name": "AgentMesh Node 2",
+  "name": "AgentSwarm Node 2",
   "description": "Test agent 2",
   "services": [
     {
@@ -11,3 +11,5 @@
   ],
   "active": true
 }
+
+

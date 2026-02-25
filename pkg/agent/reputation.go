@@ -165,7 +165,7 @@ func (c *ERC8004Client) ResolvePeerId(agentId *big.Int) (string, error) {
 	}
 
 	for _, s := range reg.Services {
-		if (s.Name == "A2A" || s.Name == "agentmesh") && strings.HasPrefix(s.Endpoint, "p2p://") {
+		if (s.Name == "A2A" || s.Name == "agentswarm") && strings.HasPrefix(s.Endpoint, "p2p://") {
 			return strings.TrimPrefix(s.Endpoint, "p2p://"), nil
 		}
 	}
@@ -240,3 +240,8 @@ func (c *ERC8004Client) Close() {
 		c.client.Close()
 	}
 }
+
+
+
+
+

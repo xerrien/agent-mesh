@@ -7,9 +7,9 @@ const (
 )
 
 const (
-	SchemaPingV1           = "agentmesh.ping.v1"
-	SchemaMessageV1        = "agentmesh.message.v1"
-	SchemaResponseV1       = "agentmesh.response.v1"
+	SchemaPingV1           = "agentswarm.ping.v1"
+	SchemaMessageV1        = "agentswarm.message.v1"
+	SchemaResponseV1       = "agentswarm.response.v1"
 )
 
 const (
@@ -69,3 +69,8 @@ type SignedPacket struct {
 	Signature string `json:"signature"` // Base64-encoded Ed25519 signature
 	PeerID    string `json:"peerId"`
 }
+
+
+
+
+

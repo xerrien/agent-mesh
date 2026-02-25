@@ -75,18 +75,18 @@ func parseRelayURLs(raw string) []string {
 }
 
 func loadWakeHookConfig() (string, time.Duration, time.Duration) {
-	cmd := strings.TrimSpace(os.Getenv("AGENTMESH_WAKE_HOOK"))
+	cmd := strings.TrimSpace(os.Getenv("AGENTSWARM_WAKE_HOOK"))
 	if cmd == "" {
 		return "", 0, 0
 	}
 	cooldown := 15 * time.Second
-	if raw := strings.TrimSpace(os.Getenv("AGENTMESH_WAKE_HOOK_COOLDOWN")); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv("AGENTSWARM_WAKE_HOOK_COOLDOWN")); raw != "" {
 		if d, err := time.ParseDuration(raw); err == nil && d >= 0 {
 			cooldown = d
 		}
 	}
 	timeout := 8 * time.Second
-	if raw := strings.TrimSpace(os.Getenv("AGENTMESH_WAKE_HOOK_TIMEOUT")); raw != "" {
+	if raw := strings.TrimSpace(os.Getenv("AGENTSWARM_WAKE_HOOK_TIMEOUT")); raw != "" {
 		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
 			timeout = d
 		}
@@ -125,9 +125,9 @@ func (n *AgentNode) runWakeHook(command string, timeout time.Duration, reason st
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
 	}
 	cmd.Env = append(os.Environ(),
-		"AGENTMESH_WAKE_REASON="+reason,
-		"AGENTMESH_WAKE_SENDER="+sender,
-		"AGENTMESH_WAKE_NODE="+n.NodeID(),
+		"AGENTSWARM_WAKE_REASON="+reason,
+		"AGENTSWARM_WAKE_SENDER="+sender,
+		"AGENTSWARM_WAKE_NODE="+n.NodeID(),
 	)
 
 	out, err := cmd.CombinedOutput()
@@ -144,3 +144,7 @@ func (n *AgentNode) runWakeHook(command string, timeout time.Duration, reason st
 		fmt.Printf("[WakeHook] Triggered (%s): %s\n", reason, trimmed)
 	}
 }
+
+
+
+

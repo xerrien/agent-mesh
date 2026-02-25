@@ -1,4 +1,4 @@
-# Build script for AgentMesh (PowerShell)
+# Build script for AgentSwarm (PowerShell)
 
 $binDir = "bin"
 if (!(Test-Path $binDir)) {
@@ -17,7 +17,7 @@ foreach ($platform in $platforms) {
     $os = $parts[0]
     $arch = $parts[1]
     
-    $binary = "agentmesh-$os-$arch"
+    $binary = "agentswarm-$os-$arch"
     if ($os -eq "windows") {
         $binary += ".exe"
     }
@@ -33,3 +33,9 @@ $env:GOOS = ""
 $env:GOARCH = ""
 
 Write-Host "Builds complete. Check the $binDir directory."
+
+
+
+
+
+

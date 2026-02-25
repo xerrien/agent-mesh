@@ -7,7 +7,7 @@ import "../src/TaskEscrow.sol";
 import "../src/JuryPool.sol";
 import "../src/DisputeResolution.sol";
 
-contract AgentMeshTest is Test {
+contract AgentSwarmTest is Test {
     TaskEscrow public escrow;
     JuryPool public pool;
     DisputeResolution public dispute;
@@ -188,3 +188,5 @@ contract AgentMeshTest is Test {
         escrow.upgradeToAndCall(address(newImpl), bytes(""));
     }
 }
+
+

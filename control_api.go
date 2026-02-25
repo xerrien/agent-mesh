@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"agentmesh/pkg/agent"
+	"agentswarm/pkg/agent"
 )
 
 type controlAPIServer struct {
@@ -93,7 +93,7 @@ func (c *controlAPIServer) withAuth(next func(http.ResponseWriter, *http.Request
 			return
 		}
 		if c.token != "" {
-			in := []byte(strings.TrimSpace(r.Header.Get("X-AgentMesh-Token")))
+			in := []byte(strings.TrimSpace(r.Header.Get("X-AgentSwarm-Token")))
 			expected := []byte(c.token)
 			if len(in) != len(expected) || subtle.ConstantTimeCompare(in, expected) != 1 {
 				writeJSON(w, http.StatusUnauthorized, map[string]interface{}{"error": "unauthorized"})
@@ -492,3 +492,8 @@ func parseLimit(raw string, fallback int, max int) int {
 	}
 	return n
 }
+
+
+
+
+

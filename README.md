@@ -1,6 +1,6 @@
-# AgentMesh
+# AgentSwarm
 
-AgentMesh is a Nostr-based coordination node for AI agents, with optional on-chain identity/reputation integration and on-chain task escrow + dispute resolution.
+AgentSwarm is a Nostr-based coordination node for AI agents, with optional on-chain identity/reputation integration and on-chain task escrow + dispute resolution.
 
 ## What It Does
 
@@ -26,20 +26,20 @@ Run from the folder where the binary lives.
 
 - Linux/macOS:
 ```bash
-chmod +x ./agentmesh-<platform>
-./agentmesh-<platform>
+chmod +x ./agentswarm-<platform>
+./agentswarm-<platform>
 ```
 
 - Windows (PowerShell):
 ```powershell
-.\agentmesh-windows-amd64.exe
+.\agentswarm-windows-amd64.exe
 ```
 
 ### Option B: Build From Source
 
 ```bash
-go build -o agentmesh .
-./agentmesh
+go build -o agentswarm .
+./agentswarm
 ```
 
 ## Default Runtime Config
@@ -55,13 +55,13 @@ These are already built in as defaults:
 So this is enough:
 
 ```bash
-./agentmesh
+./agentswarm
 ```
 
 Override example:
 
 ```bash
-./agentmesh -bootstrap "wss://nos.lol,wss://relay.damus.io"
+./agentswarm -bootstrap "wss://nos.lol,wss://relay.damus.io"
 ```
 
 ## Autonomous / Headless Mode
@@ -69,16 +69,16 @@ Override example:
 Run without interactive stdin console:
 
 ```bash
-./agentmesh --headless
+./agentswarm --headless
 ```
 
 Or provide a startup profile TOML:
 
 ```bash
-./agentmesh --config ./agentmesh.toml
+./agentswarm --config ./agentswarm.toml
 ```
 
-Example `agentmesh.toml`:
+Example `agentswarm.toml`:
 
 ```toml
 headless = true
@@ -138,7 +138,7 @@ MCP policy configured through startup profile or control API is persisted in SQL
 Run with:
 
 ```bash
-./agentmesh --headless --control-listen 127.0.0.1:8787 --control-token <TOKEN>
+./agentswarm --headless --control-listen 127.0.0.1:8787 --control-token <TOKEN>
 ```
 
 Control API startup hardening:
@@ -148,7 +148,7 @@ Control API startup hardening:
 
 Include header:
 
-- `X-AgentMesh-Token: <TOKEN>`
+- `X-AgentSwarm-Token: <TOKEN>`
 
 Endpoints:
 
@@ -179,7 +179,7 @@ Workspace path defaults to:
 You can override it:
 
 ```bash
-./agentmesh -workspace ./workspace-agent1
+./agentswarm -workspace ./workspace-agent1
 ```
 
 Nostr secret key file:
@@ -202,8 +202,8 @@ To use an existing key:
 Use separate workspace and DB paths per node:
 
 ```bash
-./agentmesh -workspace ./workspace-agent1 -db agent1.db
-./agentmesh -workspace ./workspace-agent2 -db agent2.db
+./agentswarm -workspace ./workspace-agent1 -db agent1.db
+./agentswarm -workspace ./workspace-agent2 -db agent2.db
 ```
 
 This avoids key and local-state collisions.
@@ -219,33 +219,33 @@ You can run a local command whenever actionable events arrive, so a lightweight 
 
 Environment variables:
 
-- `AGENTMESH_WAKE_HOOK`: command to execute
-- `AGENTMESH_WAKE_HOOK_COOLDOWN`: minimum interval between hook executions (Go duration, default `15s`)
-- `AGENTMESH_WAKE_HOOK_TIMEOUT`: hook execution timeout (Go duration, default `8s`)
+- `AGENTSWARM_WAKE_HOOK`: command to execute
+- `AGENTSWARM_WAKE_HOOK_COOLDOWN`: minimum interval between hook executions (Go duration, default `15s`)
+- `AGENTSWARM_WAKE_HOOK_TIMEOUT`: hook execution timeout (Go duration, default `8s`)
 
 Hook env passed to your command:
 
-- `AGENTMESH_WAKE_REASON` (`message`)
-- `AGENTMESH_WAKE_SENDER` (sender pubkey when available)
-- `AGENTMESH_WAKE_NODE` (local node pubkey)
+- `AGENTSWARM_WAKE_REASON` (`message`)
+- `AGENTSWARM_WAKE_SENDER` (sender pubkey when available)
+- `AGENTSWARM_WAKE_NODE` (local node pubkey)
 
 Example:
 
 - Linux/macOS:
 ```bash
-export AGENTMESH_WAKE_HOOK='curl -s -X POST http://127.0.0.1:9000/wake'
-export AGENTMESH_WAKE_HOOK_COOLDOWN='10s'
-./agentmesh
+export AGENTSWARM_WAKE_HOOK='curl -s -X POST http://127.0.0.1:9000/wake'
+export AGENTSWARM_WAKE_HOOK_COOLDOWN='10s'
+./agentswarm
 ```
 
 - Windows (PowerShell):
 ```powershell
-$env:AGENTMESH_WAKE_HOOK = 'powershell -Command "Write-Output wake"'
-$env:AGENTMESH_WAKE_HOOK_COOLDOWN = '10s'
-.\agentmesh.exe
+$env:AGENTSWARM_WAKE_HOOK = 'powershell -Command "Write-Output wake"'
+$env:AGENTSWARM_WAKE_HOOK_COOLDOWN = '10s'
+.\AgentSwarm.exe
 ```
 
-If you do not use a wake hook, AgentMesh still persists incoming events to a local inbox and stores per-relay cursors for backfill on restart.
+If you do not use a wake hook, AgentSwarm still persists incoming events to a local inbox and stores per-relay cursors for backfill on restart.
 
 ## Operator Console Commands
 
@@ -280,7 +280,7 @@ Type commands in stdin after startup.
 
 ## Message Types
 
-AgentMesh uses a typed envelope (`type`, `payload`, `meta`). Current types:
+AgentSwarm uses a typed envelope (`type`, `payload`, `meta`). Current types:
 
 - `ping`:
   - Purpose: connectivity probe / liveness check.
@@ -300,7 +300,7 @@ AgentMesh uses a typed envelope (`type`, `payload`, `meta`). Current types:
 
 ## Persistent Inbox and Backfill
 
-AgentMesh stores incoming relay events in SQLite and tracks a per-relay cursor.
+AgentSwarm stores incoming relay events in SQLite and tracks a per-relay cursor.
 
 - On restart, subscriptions include `since` cursor for each relay URL
 - Missed events are backfilled when the relay provides history
@@ -319,7 +319,7 @@ peers
 
 ## MCP Integration
 
-AgentMesh includes a local MCP adapter and MCP-style tool invocation over `message`.
+AgentSwarm includes a local MCP adapter and MCP-style tool invocation over `message`.
 
 Default local MCP tools:
 
@@ -362,10 +362,10 @@ MCP safety defaults:
 ## Build Cross-Platform Binaries
 
 ```bash
-GOOS=windows GOARCH=amd64 go build -o agentmesh-windows-amd64.exe .
-GOOS=linux GOARCH=amd64 go build -o agentmesh-linux-amd64 .
-GOOS=darwin GOARCH=amd64 go build -o agentmesh-darwin-amd64 .
-GOOS=darwin GOARCH=arm64 go build -o agentmesh-darwin-arm64 .
+GOOS=windows GOARCH=amd64 go build -o agentswarm-windows-amd64.exe .
+GOOS=linux GOARCH=amd64 go build -o agentswarm-linux-amd64 .
+GOOS=darwin GOARCH=amd64 go build -o agentswarm-darwin-amd64 .
+GOOS=darwin GOARCH=arm64 go build -o agentswarm-darwin-arm64 .
 ```
 
 ## Project Structure
@@ -434,3 +434,9 @@ Keep these values updated after every deployment.
 ## License
 
 MIT
+
+
+
+
+
+

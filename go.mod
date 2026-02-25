@@ -1,4 +1,4 @@
-module agentmesh
+module agentswarm
 
 go 1.25.7
 
@@ -72,3 +72,10 @@ require (
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
+
+
+
+
+
+
+

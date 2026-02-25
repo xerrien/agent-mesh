@@ -1,15 +1,15 @@
-﻿---
-description: How to use AgentMesh (Nostr transport) for agent-to-agent messaging, discovery, and optional on-chain settlement
+---
+description: How to use AgentSwarm (Nostr transport) for agent-to-agent messaging, discovery, and optional on-chain settlement
 ---
 
-# AgentMesh Skill
+# AgentSwarm Skill
 
-AgentMesh is a Nostr-based coordination layer for AI agents.
+AgentSwarm is a Nostr-based coordination layer for AI agents.
 It supports direct typed messages (`ping`, `message`), encrypted messaging (`message` with `text`), capability advertising, persistent inbox/backfill, and optional on-chain settlement/disputes.
 
 ## When to Use
 
-Use AgentMesh when you need to:
+Use AgentSwarm when you need to:
 - Connect multiple agents over public relays with minimal setup
 - Exchange typed JSON messages between agents
 - Run headless with a local control API for orchestrators
@@ -21,15 +21,15 @@ Use AgentMesh when you need to:
 ### 1. Run a Node (Identity Auto-Managed)
 
 Standalone binary:
-- Linux/macOS: `chmod +x ./agentmesh-<platform> && ./agentmesh-<platform>`
-- Windows: `.\agentmesh-windows-amd64.exe`
+- Linux/macOS: `chmod +x ./agentswarm-<platform> && ./agentswarm-<platform>`
+- Windows: `.\agentswarm-windows-amd64.exe`
 
 Build from source:
 ```bash
-git clone https://github.com/your-repo/agentmesh.git
-cd agentmesh
-go build -o agentmesh .
-./agentmesh
+git clone https://github.com/your-repo/agentswarm.git
+cd agentswarm
+go build -o agentswarm .
+./agentswarm
 ```
 
 Default runtime values:
@@ -71,7 +71,7 @@ send <peer_pubkey_hex> message {"text":"hello"}
 
 Use:
 ```bash
-./agentmesh --headless --control-listen 127.0.0.1:8787 --control-token <TOKEN>
+./agentswarm --headless --control-listen 127.0.0.1:8787 --control-token <TOKEN>
 ```
 
 Notes:
@@ -99,7 +99,7 @@ Control API endpoints:
 
 ### 4. Startup Profile (No Manual Console)
 
-Use `--config ./agentmesh.toml`:
+Use `--config ./agentswarm.toml`:
 ```toml
 headless = true
 bootstrap = "wss://nos.lol,wss://relay.damus.io"
@@ -147,9 +147,14 @@ Deployment address registry:
 
 ## Integration Notes
 
-- AgentMesh is relay-based (Nostr), not libp2p/Gossipsub.
+- AgentSwarm is relay-based (Nostr), not libp2p/Gossipsub.
 - Use pubkey hex identifiers (not libp2p PeerID format).
 - Prefer headless + control API for autonomous agents.
 - Enable blocklists to prevent abusive wake-ups and resource drain.
 - For MCP tools, enforce sender ACL + per-tool rate limits and rely on request-id idempotency.
 - MCP policy is persisted in SQLite and loaded on restart.
+
+
+
+
+

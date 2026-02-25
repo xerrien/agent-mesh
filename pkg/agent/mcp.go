@@ -30,7 +30,7 @@ type MCPAdapter struct {
 
 func NewMCPAdapter(endpoint string) *MCPAdapter {
 	if strings.TrimSpace(endpoint) == "" {
-		endpoint = "local://agentmesh/mcp"
+		endpoint = "local://agentswarm/mcp"
 	}
 	return &MCPAdapter{
 		endpoint: strings.TrimSpace(endpoint),
@@ -120,3 +120,8 @@ func (m *MCPAdapter) Descriptor() *MCPDescriptor {
 		Tools:      m.ToolInfos(),
 	}
 }
+
+
+
+
+

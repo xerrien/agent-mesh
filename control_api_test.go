@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"agentmesh/pkg/agent"
+	"agentswarm/pkg/agent"
 	"fiatjaf.com/nostr"
 )
 
@@ -140,7 +140,7 @@ func TestControlAPIAuthTokenAndRateLimit(t *testing.T) {
 
 	authReq := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
 	authReq.RemoteAddr = "127.0.0.1:5000"
-	authReq.Header.Set("X-AgentMesh-Token", "secret-token")
+	authReq.Header.Set("X-AgentSwarm-Token", "secret-token")
 	authRec := httptest.NewRecorder()
 	protected(authRec, authReq)
 	if authRec.Code != http.StatusOK {
@@ -150,7 +150,7 @@ func TestControlAPIAuthTokenAndRateLimit(t *testing.T) {
 	for i := 0; i < controlRateLimitCount; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
 		req.RemoteAddr = "10.0.0.2:6000"
-		req.Header.Set("X-AgentMesh-Token", "secret-token")
+		req.Header.Set("X-AgentSwarm-Token", "secret-token")
 		rec := httptest.NewRecorder()
 		protected(rec, req)
 		if rec.Code != http.StatusOK {
@@ -160,10 +160,15 @@ func TestControlAPIAuthTokenAndRateLimit(t *testing.T) {
 
 	overReq := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
 	overReq.RemoteAddr = "10.0.0.2:6000"
-	overReq.Header.Set("X-AgentMesh-Token", "secret-token")
+	overReq.Header.Set("X-AgentSwarm-Token", "secret-token")
 	overRec := httptest.NewRecorder()
 	protected(overRec, overReq)
 	if overRec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected 429 after rate limit, got %d", overRec.Code)
 	}
 }
+
+
+
+
+

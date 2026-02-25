@@ -34,7 +34,7 @@ jobs:
       - name: Build
         run: |
           mkdir -p bin
-          BINARY_NAME=agentmesh-${{ matrix.os }}-${{ matrix.arch }}
+          BINARY_NAME=agentswarm-${{ matrix.os }}-${{ matrix.arch }}
           if [ "${{ matrix.os }}" = "windows" ]; then
             BINARY_NAME=${BINARY_NAME}.exe
           fi
@@ -65,3 +65,9 @@ jobs:
           files: bin/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+
+
+
+
+

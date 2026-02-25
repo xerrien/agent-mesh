@@ -17,7 +17,7 @@ const (
 	KindTaskResponse            nostr.Kind = 9004
 	identityKeyFileName                    = "nostr.key"
 	meshTagName                            = "t"
-	meshTagValue                           = "agentmesh"
+	meshTagValue                           = "agentswarm"
 	directMsgEncodingNIP44                 = "nip44"
 	capabilityAdvertiseInterval            = 10 * time.Second
 	defaultAdvertiseTTL                    = 2 * time.Minute
@@ -444,3 +444,8 @@ func (n *AgentNode) seen(id nostr.ID) bool {
 	}
 	return false
 }
+
+
+
+
+

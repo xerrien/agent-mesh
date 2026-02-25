@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Build script for AgentMesh
+# Build script for AgentSwarm
 
 mkdir -p bin
 
@@ -10,7 +10,7 @@ PLATFORMS="linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 darw
 for PLATFORM in $PLATFORMS; do
     GOOS=${PLATFORM%/*}
     GOARCH=${PLATFORM#*/}
-    BINARY="agentmesh-${GOOS}-${GOARCH}"
+    BINARY="agentswarm-${GOOS}-${GOARCH}"
     
     if [ "$GOOS" == "windows" ]; then
         BINARY="${BINARY}.exe"
@@ -21,3 +21,6 @@ for PLATFORM in $PLATFORMS; do
 done
 
 echo "Builds complete. Check the bin/ directory."
+
+
+

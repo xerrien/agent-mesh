@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"agentmesh/pkg/agent"
+	"agentswarm/pkg/agent"
 	"github.com/pelletier/go-toml/v2"
 )
 
@@ -66,7 +66,7 @@ func main() {
 	configPath := flag.String("config", "", "Optional path to startup profile TOML")
 	headless := flag.Bool("headless", false, "Run without interactive operator console")
 	controlListen := flag.String("control-listen", "", "Optional local control API listen address (for example 127.0.0.1:8787)")
-	controlToken := flag.String("control-token", "", "Optional control API token (sent in X-AgentMesh-Token)")
+	controlToken := flag.String("control-token", "", "Optional control API token (sent in X-AgentSwarm-Token)")
 	rpcURL := flag.String("rpc", "https://mainnet.base.org", "Ethereum RPC URL")
 	escrowAddr := flag.String("escrow", "0xE45b6a75051AFb109dd60D262D7AF111957487B1", "TaskEscrow contract address")
 	identAddr := flag.String("identity", "0x8004A818BFB912233c491871b3d84c89A494BD9e", "ERC-8004 IdentityRegistry address")
@@ -92,7 +92,7 @@ func main() {
 		runHeadless = true
 	}
 
-	fmt.Printf("Starting AgentMesh Node...\n")
+	fmt.Printf("Starting AgentSwarm Node...\n")
 	fmt.Printf("Database: %s\n", *dbPath)
 	fmt.Printf("Workspace: %s\n", *workspace)
 
@@ -476,3 +476,8 @@ func isLikelyLoopbackAddr(addr string) bool {
 	addr = strings.TrimSpace(strings.ToLower(addr))
 	return strings.HasPrefix(addr, "127.0.0.1:") || strings.HasPrefix(addr, "localhost:") || strings.HasPrefix(addr, "[::1]:")
 }
+
+
+
+
+

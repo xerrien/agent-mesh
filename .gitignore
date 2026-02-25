@@ -34,6 +34,8 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .DS_Store
 
 # Go
+agentswarm
+agentswarm.exe
 agentmesh
 agentmesh.exe
 agent_metadata.db
@@ -48,3 +50,4 @@ contracts/lib/
 
 workspace
 workspace/
+

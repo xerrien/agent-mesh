@@ -18,7 +18,7 @@ type mcpNestedEnvelope struct {
 }
 
 func (n *AgentNode) initMCP() {
-	n.mcp = NewMCPAdapter("local://agentmesh/mcp")
+	n.mcp = NewMCPAdapter("local://agentswarm/mcp")
 
 	_ = n.mcp.RegisterToolWithValidator("workspace.search", "Search local workspace memory by tag", func(args map[string]interface{}) error {
 		rawTag, ok := args["tag"].(string)
@@ -164,3 +164,8 @@ func (n *AgentNode) MCPDescriptor() *MCPDescriptor {
 	}
 	return n.mcp.Descriptor()
 }
+
+
+
+
+
