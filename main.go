@@ -52,6 +52,12 @@ type startupProfile struct {
 	MCPToolACL              []startupMCPACLConfig     `toml:"mcp_tool_acl"`
 }
 
+const (
+	operatorConnectTimeout = 20 * time.Second
+	operatorSendTimeout    = 30 * time.Second
+	startupConnectTimeout  = 20 * time.Second
+)
+
 func main() {
 	const defaultWorkspace = "./workspace"
 	dbPath := flag.String("db", "agent_metadata.db", "Path to metadata database")
@@ -274,7 +280,7 @@ func applyStartupProfile(node *agent.AgentNode, profile *startupProfile) error {
 		if peer == "" {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), startupConnectTimeout)
 		err := node.ConnectPeer(ctx, peer)
 		cancel()
 		if err != nil {
@@ -327,7 +333,7 @@ func operatorConsole(node *agent.AgentNode) {
 				continue
 			}
 			target := parts[1]
-			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), operatorConnectTimeout)
 			err := node.ConnectPeer(ctx, target)
 			cancel()
 			if err != nil {
@@ -348,7 +354,7 @@ func operatorConsole(node *agent.AgentNode) {
 				fmt.Printf("[Operator] Invalid JSON payload: %v\n", err)
 				continue
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), operatorSendTimeout)
 			resp, err := node.SendTyped(ctx, target, msgType, payload)
 			cancel()
 			if err != nil {

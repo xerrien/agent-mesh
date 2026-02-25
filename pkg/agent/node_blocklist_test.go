@@ -98,3 +98,33 @@ func TestBlocklistPersistsAcrossRestart(t *testing.T) {
 		t.Fatalf("expected peer to remain blocked after restart")
 	}
 }
+
+func TestBlockPeerCleansPeerState(t *testing.T) {
+	t.Parallel()
+
+	db := filepath.Join(t.TempDir(), "test.db")
+	node, err := NewAgentNode(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	defer func() { _ = node.Stop() }()
+
+	peer := nostr.Generate().Public().Hex()
+	node.mu.Lock()
+	node.knownPeers[peer] = struct{}{}
+	node.peerCapabilities[peer] = AgentCapability{Name: "local.echo", Description: "test"}
+	node.peerRelays[peer] = []string{"wss://relay.example"}
+	node.mu.Unlock()
+
+	if err := node.BlockPeer(peer); err != nil {
+		t.Fatalf("block peer: %v", err)
+	}
+	node.mu.RLock()
+	_, inKnown := node.knownPeers[peer]
+	_, inCaps := node.peerCapabilities[peer]
+	_, inRelays := node.peerRelays[peer]
+	node.mu.RUnlock()
+	if inKnown || inCaps || inRelays {
+		t.Fatalf("expected peer runtime state to be removed on block")
+	}
+}

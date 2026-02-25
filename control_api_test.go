@@ -109,3 +109,61 @@ func TestControlAPIMCPErrorPaths(t *testing.T) {
 		t.Fatalf("expected 400 for missing tool/pubkey, got %d body=%s", missingRec.Code, missingRec.Body.String())
 	}
 }
+
+func TestControlAPIAuthTokenAndRateLimit(t *testing.T) {
+	t.Parallel()
+
+	db := filepath.Join(t.TempDir(), "test.db")
+	node, err := agent.NewAgentNode(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new node: %v", err)
+	}
+	defer func() { _ = node.Stop() }()
+
+	c := &controlAPIServer{
+		node:  node,
+		token: "secret-token",
+		rate:  make(map[string]rateWindow),
+	}
+
+	protected := c.withAuth(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"ok": true})
+	})
+
+	unauthReq := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	unauthReq.RemoteAddr = "127.0.0.1:5000"
+	unauthRec := httptest.NewRecorder()
+	protected(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for missing token, got %d", unauthRec.Code)
+	}
+
+	authReq := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	authReq.RemoteAddr = "127.0.0.1:5000"
+	authReq.Header.Set("X-AgentMesh-Token", "secret-token")
+	authRec := httptest.NewRecorder()
+	protected(authRec, authReq)
+	if authRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for valid token, got %d", authRec.Code)
+	}
+
+	for i := 0; i < controlRateLimitCount; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+		req.RemoteAddr = "10.0.0.2:6000"
+		req.Header.Set("X-AgentMesh-Token", "secret-token")
+		rec := httptest.NewRecorder()
+		protected(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 before limit, got %d on iteration %d", rec.Code, i)
+		}
+	}
+
+	overReq := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	overReq.RemoteAddr = "10.0.0.2:6000"
+	overReq.Header.Set("X-AgentMesh-Token", "secret-token")
+	overRec := httptest.NewRecorder()
+	protected(overRec, overReq)
+	if overRec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 after rate limit, got %d", overRec.Code)
+	}
+}

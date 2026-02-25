@@ -11,6 +11,8 @@ import (
 	"sync"
 )
 
+const maxMCPToolNameLength = 128
+
 type MCPToolHandler func(ctx context.Context, args map[string]interface{}) (interface{}, error)
 type MCPToolValidator func(args map[string]interface{}) error
 
@@ -45,6 +47,9 @@ func (m *MCPAdapter) RegisterToolWithValidator(name string, description string, 
 	if name == "" {
 		return fmt.Errorf("tool name cannot be empty")
 	}
+	if len(name) > maxMCPToolNameLength {
+		return fmt.Errorf("tool name too long (max %d)", maxMCPToolNameLength)
+	}
 	if handler == nil {
 		return fmt.Errorf("tool handler cannot be nil")
 	}
@@ -65,6 +70,9 @@ func (m *MCPAdapter) CallTool(ctx context.Context, name string, args map[string]
 	name = strings.TrimSpace(strings.ToLower(name))
 	if name == "" {
 		return nil, fmt.Errorf("tool name cannot be empty")
+	}
+	if len(name) > maxMCPToolNameLength {
+		return nil, fmt.Errorf("tool name too long (max %d)", maxMCPToolNameLength)
 	}
 	m.mu.RLock()
 	tool, ok := m.tools[name]

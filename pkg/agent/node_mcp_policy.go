@@ -45,6 +45,9 @@ func normalizeToolName(tool string) (string, error) {
 	if tool == "" {
 		return "", fmt.Errorf("tool cannot be empty")
 	}
+	if len(tool) > maxMCPToolNameLength {
+		return "", fmt.Errorf("tool too long (max %d)", maxMCPToolNameLength)
+	}
 	return tool, nil
 }
 

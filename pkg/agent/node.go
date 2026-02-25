@@ -21,6 +21,13 @@ const (
 	directMsgEncodingNIP44                 = "nip44"
 	capabilityAdvertiseInterval            = 10 * time.Second
 	defaultAdvertiseTTL                    = 2 * time.Minute
+	maxSeenEventsCache                     = 50000
+	relayPublishTimeout                    = 8 * time.Second
+	networkHealthLogInterval               = 30 * time.Second
+	defaultPingTimeout                     = 20 * time.Second
+	defaultSendTimeout                     = 30 * time.Second
+	defaultMessageTimeoutMs     int64      = 30000
+	defaultPingTimeoutMs        int64      = 20000
 )
 
 type CapabilityCallback func(peerID string, capability AgentCapability)
@@ -52,6 +59,7 @@ type AgentNode struct {
 	relays            []relayClient
 	relayConnect      func(ctx context.Context, url string) (relayClient, error)
 	seenEvents        map[nostr.ID]struct{}
+	seenEventOrder    []nostr.ID
 	knownPeers        map[string]struct{}
 	peerRelays        map[string][]string
 	blockedPeers      map[string]struct{}
@@ -89,6 +97,7 @@ func NewAgentNode(dbPath string, workspacePath string) (*AgentNode, error) {
 		ctx:               ctx,
 		cancel:            cancel,
 		seenEvents:        make(map[nostr.ID]struct{}),
+		seenEventOrder:    make([]nostr.ID, 0, 1024),
 		knownPeers:        make(map[string]struct{}),
 		peerRelays:        make(map[string][]string),
 		blockedPeers:      make(map[string]struct{}),
@@ -190,6 +199,9 @@ func (n *AgentNode) BlockPeer(target string) error {
 	}
 	n.mu.Lock()
 	n.blockedPeers[peerID] = struct{}{}
+	delete(n.knownPeers, peerID)
+	delete(n.peerCapabilities, peerID)
+	delete(n.peerRelays, peerID)
 	n.mu.Unlock()
 	return nil
 }
@@ -424,5 +436,11 @@ func (n *AgentNode) seen(id nostr.ID) bool {
 		return true
 	}
 	n.seenEvents[id] = struct{}{}
+	n.seenEventOrder = append(n.seenEventOrder, id)
+	for len(n.seenEventOrder) > maxSeenEventsCache {
+		oldest := n.seenEventOrder[0]
+		n.seenEventOrder = n.seenEventOrder[1:]
+		delete(n.seenEvents, oldest)
+	}
 	return false
 }

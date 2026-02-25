@@ -145,11 +145,20 @@ func (s *MemoryStore) SearchLocalWorkspace(tag string) []MemoryChunk {
 	if s.workspacePath == "" {
 		return nil
 	}
+	workspaceRoot, err := filepath.EvalSymlinks(filepath.Clean(s.workspacePath))
+	if err != nil {
+		workspaceRoot = filepath.Clean(s.workspacePath)
+	}
+	workspaceRoot = ensureTrailingSeparator(workspaceRoot)
 
 	var results []MemoryChunk
 	files, _ := filepath.Glob(filepath.Join(s.workspacePath, "*.md"))
 
 	for _, file := range files {
+		ok, err := isPathWithinRoot(file, workspaceRoot)
+		if err != nil || !ok {
+			continue
+		}
 		data, err := os.ReadFile(file)
 		if err != nil {
 			continue
@@ -250,13 +259,19 @@ func (s *MemoryStore) GetMemory(topic string) (*MemoryChunk, error) {
 		return nil, nil
 	}
 
+	workspaceRoot, err := filepath.EvalSymlinks(filepath.Clean(s.workspacePath))
+	if err != nil {
+		workspaceRoot = filepath.Clean(s.workspacePath)
+	}
+	workspaceRoot = ensureTrailingSeparator(workspaceRoot)
+
 	path := filepath.Join(s.workspacePath, topic)
-	// Security check: ensure path is within workspace
-	if !strings.HasPrefix(filepath.Clean(path), filepath.Clean(s.workspacePath)) {
+	ok, err := isPathWithinRoot(path, workspaceRoot)
+	if err != nil || !ok {
 		return nil, fmt.Errorf("access denied")
 	}
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -653,6 +668,28 @@ func isDuplicateColumnError(err error) bool {
 		return false
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
+}
+
+func ensureTrailingSeparator(path string) string {
+	path = filepath.Clean(path)
+	if strings.HasSuffix(path, string(os.PathSeparator)) {
+		return path
+	}
+	return path + string(os.PathSeparator)
+}
+
+func isPathWithinRoot(path string, rootWithSep string) (bool, error) {
+	absPath, err := filepath.Abs(filepath.Clean(path))
+	if err != nil {
+		return false, err
+	}
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if err != nil {
+		// If target doesn't exist yet, fallback to cleaned absolute path.
+		realPath = absPath
+	}
+	realPath = ensureTrailingSeparator(realPath)
+	return strings.HasPrefix(strings.ToLower(realPath), strings.ToLower(rootWithSep)), nil
 }
 
 // Close releases database resources used by the memory store.

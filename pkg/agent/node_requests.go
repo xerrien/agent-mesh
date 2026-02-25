@@ -35,7 +35,7 @@ func (n *AgentNode) SendTyped(ctx context.Context, target string, msgType string
 		Payload:   payload,
 		Sender:    n.NodeID(),
 		Timestamp: time.Now().UnixMilli(),
-		Meta:      defaultMessageMeta(schema, msgType, 30000),
+		Meta:      defaultMessageMeta(schema, msgType, defaultMessageTimeoutMs),
 	}
 	return n.sendRequest(ctx, target, msg)
 }
@@ -46,14 +46,14 @@ func (n *AgentNode) PingPeer(ctx context.Context, target string) error {
 		Payload:   map[string]interface{}{"probe": "connect"},
 		Sender:    n.NodeID(),
 		Timestamp: time.Now().UnixMilli(),
-		Meta:      defaultMessageMeta(SchemaPingV1, "connectivity_probe", 20000),
+		Meta:      defaultMessageMeta(SchemaPingV1, "connectivity_probe", defaultPingTimeoutMs),
 	}
 	if _, err := n.sendRequest(ctx, target, msg); err != nil {
 		return fmt.Errorf("peer did not acknowledge ping: %w", err)
 	}
 	peerID, err := normalizePubKey(target)
 	if err != nil {
-		return err
+		return fmt.Errorf("normalize peer pubkey: %w", err)
 	}
 	n.mu.Lock()
 	n.knownPeers[peerID] = struct{}{}
@@ -115,7 +115,7 @@ func (n *AgentNode) sendRequest(ctx context.Context, target string, msg AgentMes
 		nostr.Tag{"from", n.NodeID()},
 	}
 	if err := n.publishJSONEventForPeer(KindTaskRequest, tags, msg, peerID); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("publish request: %w", err)
 	}
 
 	for {

@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"agentmesh/pkg/agent"
@@ -16,7 +19,22 @@ type controlAPIServer struct {
 	node  *agent.AgentNode
 	token string
 	srv   *http.Server
+	mu    sync.Mutex
+	rate  map[string]rateWindow
 }
+
+type rateWindow struct {
+	start time.Time
+	count int
+}
+
+const (
+	controlRateLimitCount  = 120
+	controlRateLimitWindow = time.Minute
+	controlShutdownTimeout = 3 * time.Second
+	controlConnectTimeout  = 20 * time.Second
+	controlSendTimeout     = 30 * time.Second
+)
 
 func startControlAPI(listenAddr string, node *agent.AgentNode, token string) (*controlAPIServer, error) {
 	if node == nil {
@@ -25,6 +43,7 @@ func startControlAPI(listenAddr string, node *agent.AgentNode, token string) (*c
 	c := &controlAPIServer{
 		node:  node,
 		token: strings.TrimSpace(token),
+		rate:  make(map[string]rateWindow),
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/status", c.withAuth(c.handleStatus))
@@ -62,21 +81,51 @@ func (c *controlAPIServer) Stop() error {
 	if c == nil || c.srv == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), controlShutdownTimeout)
 	defer cancel()
 	return c.srv.Shutdown(ctx)
 }
 
 func (c *controlAPIServer) withAuth(next func(http.ResponseWriter, *http.Request)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !c.allowRequest(r) {
+			writeJSON(w, http.StatusTooManyRequests, map[string]interface{}{"error": "rate limit exceeded"})
+			return
+		}
 		if c.token != "" {
-			if strings.TrimSpace(r.Header.Get("X-AgentMesh-Token")) != c.token {
+			in := []byte(strings.TrimSpace(r.Header.Get("X-AgentMesh-Token")))
+			expected := []byte(c.token)
+			if len(in) != len(expected) || subtle.ConstantTimeCompare(in, expected) != 1 {
 				writeJSON(w, http.StatusUnauthorized, map[string]interface{}{"error": "unauthorized"})
 				return
 			}
 		}
 		next(w, r)
 	}
+}
+
+func (c *controlAPIServer) allowRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
+	if err != nil || host == "" {
+		host = strings.TrimSpace(r.RemoteAddr)
+		if host == "" {
+			host = "unknown"
+		}
+	}
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	w := c.rate[host]
+	if w.start.IsZero() || now.Sub(w.start) >= controlRateLimitWindow {
+		w = rateWindow{start: now, count: 0}
+	}
+	if w.count >= controlRateLimitCount {
+		c.rate[host] = w
+		return false
+	}
+	w.count++
+	c.rate[host] = w
+	return true
 }
 
 func (c *controlAPIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -123,7 +172,7 @@ func (c *controlAPIServer) handleConnect(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "pubkey is required"})
 		return
 	}
-	timeout := 20 * time.Second
+	timeout := controlConnectTimeout
 	if req.TimeoutMs > 0 {
 		timeout = time.Duration(req.TimeoutMs) * time.Millisecond
 	}
@@ -161,7 +210,7 @@ func (c *controlAPIServer) handleSend(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]interface{}{"error": "payload must be a JSON object"})
 		return
 	}
-	timeout := 30 * time.Second
+	timeout := controlSendTimeout
 	if req.TimeoutMs > 0 {
 		timeout = time.Duration(req.TimeoutMs) * time.Millisecond
 	}

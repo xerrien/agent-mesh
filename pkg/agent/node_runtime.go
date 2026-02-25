@@ -34,7 +34,7 @@ func (n *AgentNode) loadOrCreateKey() (nostr.SecretKey, error) {
 }
 
 func (n *AgentNode) logNetworkHealth() {
-	ticker := time.NewTicker(30 * time.Second)
+	ticker := time.NewTicker(networkHealthLogInterval)
 	defer ticker.Stop()
 	for {
 		select {

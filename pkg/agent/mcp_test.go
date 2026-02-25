@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -81,5 +82,21 @@ func TestMCPAdapterValidator(t *testing.T) {
 	}
 	if _, err := m.CallTool(context.Background(), "local.validated", map[string]interface{}{"x": 1.0}); err != nil {
 		t.Fatalf("expected valid args, got %v", err)
+	}
+}
+
+func TestMCPToolNameLengthLimit(t *testing.T) {
+	t.Parallel()
+
+	m := NewMCPAdapter("")
+	tooLong := strings.Repeat("a", maxMCPToolNameLength+1)
+	if err := m.RegisterTool(tooLong, "desc", func(_ context.Context, _ map[string]interface{}) (interface{}, error) {
+		return nil, nil
+	}); err == nil {
+		t.Fatalf("expected registration with too-long tool name to fail")
+	}
+
+	if _, err := m.CallTool(context.Background(), tooLong, map[string]interface{}{}); err == nil {
+		t.Fatalf("expected call with too-long tool name to fail")
 	}
 }

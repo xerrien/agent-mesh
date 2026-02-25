@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -95,6 +96,12 @@ func (r *fakeRelay) Close() {
 	r.subs = nil
 }
 
+func (r *fakeRelay) SubscriberCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.subs)
+}
+
 func matchesFilter(f nostr.Filter, evt nostr.Event) bool {
 	if len(f.Kinds) > 0 {
 		ok := false
@@ -140,19 +147,152 @@ func matchesFilter(f nostr.Filter, evt nostr.Event) bool {
 func TestNetworkPingOverFakeRelay(t *testing.T) {
 	t.Parallel()
 
-	relay := newFakeRelay("wss://fake-relay.test")
+	nodeA, nodeB, _ := setupTwoNodesOnRelay(t, "wss://fake-relay.test")
+	defer func() { _ = nodeA.Stop() }()
+	defer func() { _ = nodeB.Stop() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := nodeA.PingPeer(ctx, nodeB.NodeID()); err != nil {
+		t.Fatalf("ping failed over fake relay: %v", err)
+	}
+	if !contains(nodeA.ConnectedPeers(), nodeB.NodeID()) {
+		t.Fatalf("expected nodeA to know nodeB after ping")
+	}
+}
+
+func TestNetworkRelayCloseCausesPingFailure(t *testing.T) {
+	t.Parallel()
+
+	nodeA, nodeB, relay := setupTwoNodesOnRelay(t, "wss://fake-relay-close.test")
+	defer func() { _ = nodeA.Stop() }()
+	defer func() { _ = nodeB.Stop() }()
+	relay.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if err := nodeA.PingPeer(ctx, nodeB.NodeID()); err == nil {
+		t.Fatalf("expected ping to fail after relay close")
+	}
+}
+
+func TestNetworkMCPOverFakeRelay(t *testing.T) {
+	t.Parallel()
+
+	nodeA, nodeB, _ := setupTwoNodesOnRelay(t, "wss://fake-relay-mcp.test")
+	defer func() { _ = nodeA.Stop() }()
+	defer func() { _ = nodeB.Stop() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	resp, err := nodeA.SendTyped(ctx, nodeB.NodeID(), MessageTypeMessage, map[string]interface{}{
+		"text": `{"tool":"local.echo","args":{"x":1}}`,
+	})
+	if err != nil {
+		t.Fatalf("mcp send failed over fake relay: %v", err)
+	}
+	data, ok := resp.(map[string]interface{})
+	if !ok {
+		t.Fatalf("expected map response, got %T", resp)
+	}
+	if data["type"] != "mcp_result" {
+		t.Fatalf("expected mcp_result, got %v", data["type"])
+	}
+	if data["tool"] != "local.echo" {
+		t.Fatalf("expected local.echo tool, got %v", data["tool"])
+	}
+}
+
+func TestNetworkMultiMessageConversation(t *testing.T) {
+	t.Parallel()
+
+	nodeA, nodeB, _ := setupTwoNodesOnRelay(t, "wss://fake-relay-convo.test")
+	defer func() { _ = nodeA.Stop() }()
+	defer func() { _ = nodeB.Stop() }()
+
+	for i := 0; i < 5; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		resp, err := nodeA.SendTyped(ctx, nodeB.NodeID(), MessageTypeMessage, map[string]interface{}{
+			"text": `{"tool":"local.echo","args":{"turn":` + fmt.Sprintf("%d", i) + `}}`,
+		})
+		cancel()
+		if err != nil {
+			t.Fatalf("conversation turn %d failed: %v", i, err)
+		}
+		data, ok := resp.(map[string]interface{})
+		if !ok || data["type"] != "mcp_result" {
+			t.Fatalf("conversation turn %d unexpected response: %#v", i, resp)
+		}
+	}
+}
+
+func TestNetworkConcurrentMessageHandling(t *testing.T) {
+	t.Parallel()
+
+	nodeA, nodeB, _ := setupTwoNodesOnRelay(t, "wss://fake-relay-concurrent.test")
+	defer func() { _ = nodeA.Stop() }()
+	defer func() { _ = nodeB.Stop() }()
+
+	const workers = 10
+	errCh := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_, err := nodeA.SendTyped(ctx, nodeB.NodeID(), MessageTypeMessage, map[string]interface{}{
+				"text": `{"tool":"local.echo","args":{"worker":` + fmt.Sprintf("%d", i) + `}}`,
+			})
+			errCh <- err
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent send failed: %v", err)
+		}
+	}
+}
+
+func contains(items []string, want string) bool {
+	for _, it := range items {
+		if it == want {
+			return true
+		}
+	}
+	return false
+}
+
+func waitForRelaySubscribers(t *testing.T, relay *fakeRelay, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if relay.SubscriberCount() >= want {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for relay subscribers: want=%d got=%d", want, relay.SubscriberCount())
+}
+
+func setupTwoNodesOnRelay(t *testing.T, relayURL string) (*AgentNode, *AgentNode, *fakeRelay) {
+	t.Helper()
+
+	relay := newFakeRelay(relayURL)
 	dir := t.TempDir()
 
 	nodeA, err := NewAgentNode(filepath.Join(dir, "a.db"), filepath.Join(dir, "a"))
 	if err != nil {
 		t.Fatalf("new nodeA: %v", err)
 	}
-	defer func() { _ = nodeA.Stop() }()
 	nodeB, err := NewAgentNode(filepath.Join(dir, "b.db"), filepath.Join(dir, "b"))
 	if err != nil {
 		t.Fatalf("new nodeB: %v", err)
 	}
-	defer func() { _ = nodeB.Stop() }()
 
 	skA := nostr.Generate()
 	skB := nostr.Generate()
@@ -171,23 +311,6 @@ func TestNetworkPingOverFakeRelay(t *testing.T) {
 
 	go nodeA.subscribeRelay(relay)
 	go nodeB.subscribeRelay(relay)
-	time.Sleep(30 * time.Millisecond)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := nodeA.PingPeer(ctx, nodeB.NodeID()); err != nil {
-		t.Fatalf("ping failed over fake relay: %v", err)
-	}
-	if !contains(nodeA.ConnectedPeers(), nodeB.NodeID()) {
-		t.Fatalf("expected nodeA to know nodeB after ping")
-	}
-}
-
-func contains(items []string, want string) bool {
-	for _, it := range items {
-		if it == want {
-			return true
-		}
-	}
-	return false
+	waitForRelaySubscribers(t, relay, 2, time.Second)
+	return nodeA, nodeB, relay
 }

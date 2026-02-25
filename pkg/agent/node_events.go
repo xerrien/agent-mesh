@@ -128,13 +128,15 @@ func (n *AgentNode) handleTaskRequestEvent(evt nostr.Event) {
 	n.knownPeers[requester] = struct{}{}
 	n.mu.Unlock()
 
-	_ = n.publishTaskResponse(requester, reqID, responsePayloadWithReceipt(
+	if err := n.publishTaskResponse(requester, reqID, responsePayloadWithReceipt(
 		ReceiptStageAccepted,
 		reqID,
 		"",
 		"request accepted for processing",
 		nil,
-	))
+	)); err != nil {
+		fmt.Printf("[TaskResponse] failed to publish accepted receipt (req=%s to=%s): %v\n", reqID, requester, err)
+	}
 
 	respPayload, handled := n.dispatchMessageHandler(n.ctx, MessageRequest{
 		Requester: requester,
@@ -148,23 +150,27 @@ func (n *AgentNode) handleTaskRequestEvent(evt nostr.Event) {
 				detail = s
 			}
 		}
-		_ = n.publishTaskResponse(requester, reqID, responsePayloadWithReceipt(
+		if err := n.publishTaskResponse(requester, reqID, responsePayloadWithReceipt(
 			ReceiptStageFailed,
 			reqID,
 			"request_rejected",
 			detail,
 			nil,
-		))
+		)); err != nil {
+			fmt.Printf("[TaskResponse] failed to publish failed receipt (req=%s to=%s): %v\n", reqID, requester, err)
+		}
 		return
 	}
 
-	_ = n.publishTaskResponse(requester, reqID, responsePayloadWithReceipt(
+	if err := n.publishTaskResponse(requester, reqID, responsePayloadWithReceipt(
 		ReceiptStageProcessed,
 		reqID,
 		"",
 		"request processed",
 		respPayload,
-	))
+	)); err != nil {
+		fmt.Printf("[TaskResponse] failed to publish processed receipt (req=%s to=%s): %v\n", reqID, requester, err)
+	}
 }
 
 func (n *AgentNode) handleTaskResponseEvent(evt nostr.Event) {
