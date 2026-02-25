@@ -107,6 +107,40 @@ This avoids key and local-state collisions.
 The node enables ERC identity/reputation client when required chain flags are present (`-rpc`, `-escrow`, `-identity`).  
 With defaults, this is enabled automatically unless you override them to empty values.
 
+## Wake Hook (Sleep/Wake Integration)
+
+You can run a local command whenever actionable events arrive, so a lightweight listener can wake a heavier agent runtime.
+
+Environment variables:
+
+- `AGENTMESH_WAKE_HOOK`: command to execute
+- `AGENTMESH_WAKE_HOOK_COOLDOWN`: minimum interval between hook executions (Go duration, default `15s`)
+- `AGENTMESH_WAKE_HOOK_TIMEOUT`: hook execution timeout (Go duration, default `8s`)
+
+Hook env passed to your command:
+
+- `AGENTMESH_WAKE_REASON` (`message`, `task`, `provider_lookup`, `knowledge_query`)
+- `AGENTMESH_WAKE_SENDER` (sender pubkey when available)
+- `AGENTMESH_WAKE_NODE` (local node pubkey)
+
+Example:
+
+- Linux/macOS:
+```bash
+export AGENTMESH_WAKE_HOOK='curl -s -X POST http://127.0.0.1:9000/wake'
+export AGENTMESH_WAKE_HOOK_COOLDOWN='10s'
+./agentmesh
+```
+
+- Windows (PowerShell):
+```powershell
+$env:AGENTMESH_WAKE_HOOK = 'powershell -Command "Write-Output wake"'
+$env:AGENTMESH_WAKE_HOOK_COOLDOWN = '10s'
+.\agentmesh.exe
+```
+
+If you do not use a wake hook, AgentMesh still persists incoming events to a local inbox and stores per-relay cursors for backfill on restart.
+
 ## Operator Console Commands
 
 Type commands in stdin after startup.
@@ -122,6 +156,9 @@ Type commands in stdin after startup.
 - `unadvertise <name>`
 - `ask <pubkey> <task>`
 - `askall <task>`
+- `inbox [limit]`
+- `inbox-read [limit]`
+- `inbox-ack <eventID>`
 
 ### Command Notes
 
@@ -131,6 +168,18 @@ Type commands in stdin after startup.
 - `query` supports optional tag list after `|`
 - `ask` asks one peer for provider suggestions
 - `askall` asks all connected peers
+- `inbox` shows latest persisted events (acked + pending)
+- `inbox-read` shows unread/pending events only (oldest first)
+- `inbox-ack` marks one event as processed
+
+## Persistent Inbox and Backfill
+
+AgentMesh stores incoming relay events in SQLite and tracks a per-relay cursor.
+
+- On restart, subscriptions include `since` cursor for each relay URL
+- Missed events are backfilled when the relay provides history
+- Use `inbox` to inspect persisted incoming events
+- Use `inbox-read` + `inbox-ack` for explicit processing workflow
 
 ## Quick Usage Examples
 
