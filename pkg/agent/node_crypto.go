@@ -107,3 +107,39 @@ func (n *AgentNode) decryptFromPeer(peerID string, ciphertext string) (string, e
 	}
 	return nip44.Decrypt(ciphertext, ck)
 }
+
+func (n *AgentNode) normalizeEncryptedMessagePayload(peerID string, payload interface{}) (map[string]interface{}, error) {
+	// Already-encrypted envelope passthrough
+	if ciphertext, ok := extractEncryptedMessagePayload(payload); ok {
+		return map[string]interface{}{
+			"encoding":   directMsgEncodingNIP44,
+			"ciphertext": ciphertext,
+		}, nil
+	}
+
+	// Plaintext input from JSON: {"text":"..."}
+	m, ok := payload.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("message payload must be JSON object with text or ciphertext")
+	}
+	rawText, ok := m["text"]
+	if !ok {
+		return nil, fmt.Errorf("message payload must include text or ciphertext")
+	}
+	text, ok := rawText.(string)
+	if !ok {
+		return nil, fmt.Errorf("message text must be a string")
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, fmt.Errorf("message text cannot be empty")
+	}
+	ciphertext, err := n.encryptForPeer(peerID, text)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]interface{}{
+		"encoding":   directMsgEncodingNIP44,
+		"ciphertext": ciphertext,
+	}, nil
+}

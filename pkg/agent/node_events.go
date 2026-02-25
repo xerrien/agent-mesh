@@ -8,37 +8,42 @@ import (
 	"fiatjaf.com/nostr"
 )
 
-func (n *AgentNode) subscribeRelay(relay *nostr.Relay) {
+func (n *AgentNode) subscribeRelay(relay relayClient) {
 	filter := nostr.Filter{
-		Kinds: []nostr.Kind{KindCapability, KindKnowledgeQuery, KindTaskRequest, KindTaskResponse},
+		Kinds: []nostr.Kind{KindCapability, KindTaskRequest, KindTaskResponse},
 		Tags:  nostr.TagMap{meshTagName: []string{meshTagValue}},
 	}
-	if ts, eventID, err := n.Memory.GetRelayCursor(relay.URL); err == nil && ts > 0 {
+	if ts, eventID, err := n.Memory.GetRelayCursor(relay.URL()); err == nil && ts > 0 {
 		filter.Since = nostr.Timestamp(ts + 1)
 		if eventID != "" {
-			fmt.Printf("[Backfill] Relay %s since %d (last=%s)\n", relay.URL, ts+1, eventID)
+			fmt.Printf("[Backfill] Relay %s since %d (last=%s)\n", relay.URL(), ts+1, eventID)
 		} else {
-			fmt.Printf("[Backfill] Relay %s since %d\n", relay.URL, ts+1)
+			fmt.Printf("[Backfill] Relay %s since %d\n", relay.URL(), ts+1)
 		}
 	}
 	sub, err := relay.Subscribe(n.ctx, filter, nostr.SubscriptionOptions{})
 	if err != nil {
-		fmt.Printf("[Nostr] Subscribe failed on %s: %v\n", relay.URL, err)
+		fmt.Printf("[Nostr] Subscribe failed on %s: %v\n", relay.URL(), err)
 		return
 	}
 
 	for evt := range sub.Events {
-		if evt.PubKey.Hex() == n.NodeID() {
+		sender := evt.PubKey.Hex()
+		if sender == n.NodeID() {
 			continue
 		}
-		n.addPeerRelay(evt.PubKey.Hex(), relay.URL)
-		n.persistInboxEvent(relay.URL, evt)
+		if n.IsBlockedPeer(sender) {
+			n.updateRelayCursor(relay.URL(), evt)
+			continue
+		}
+		n.addPeerRelay(sender, relay.URL())
+		n.persistInboxEvent(relay.URL(), evt)
 		if n.seen(evt.ID) {
-			n.updateRelayCursor(relay.URL, evt)
+			n.updateRelayCursor(relay.URL(), evt)
 			continue
 		}
 		n.handleEvent(evt)
-		n.updateRelayCursor(relay.URL, evt)
+		n.updateRelayCursor(relay.URL(), evt)
 	}
 }
 
@@ -46,8 +51,6 @@ func (n *AgentNode) handleEvent(evt nostr.Event) {
 	switch evt.Kind {
 	case KindCapability:
 		n.handleCapabilityEvent(evt)
-	case KindKnowledgeQuery:
-		n.handleKnowledgeQueryEvent(evt)
 	case KindTaskRequest:
 		n.handleTaskRequestEvent(evt)
 	case KindTaskResponse:
@@ -56,6 +59,9 @@ func (n *AgentNode) handleEvent(evt nostr.Event) {
 }
 
 func (n *AgentNode) handleCapabilityEvent(evt nostr.Event) {
+	if n.IsBlockedPeer(evt.PubKey.Hex()) {
+		return
+	}
 	var data struct {
 		Capability AgentCapability `json:"capability"`
 		EthAddress string          `json:"ethAddress,omitempty"`
@@ -84,29 +90,10 @@ func (n *AgentNode) handleCapabilityEvent(evt nostr.Event) {
 	}
 }
 
-func (n *AgentNode) handleKnowledgeQueryEvent(evt nostr.Event) {
-	var query KnowledgeDiscoveryMsg
-	if err := json.Unmarshal([]byte(evt.Content), &query); err != nil {
+func (n *AgentNode) handleTaskRequestEvent(evt nostr.Event) {
+	if n.IsBlockedPeer(evt.PubKey.Hex()) {
 		return
 	}
-	fmt.Printf("[Memory] Received discovery query: %q from %s\n", query.Query, query.Requester)
-
-	var matches []MemoryChunk
-	n.Memory.mu.RLock()
-	for _, tag := range query.Tags {
-		items, err := n.Memory.Search(tag)
-		if err == nil {
-			matches = append(matches, items...)
-		}
-	}
-	n.Memory.mu.RUnlock()
-	if len(matches) > 0 {
-		fmt.Printf("[Memory] Found %d potential matches for %q\n", len(matches), query.Query)
-	}
-	n.triggerWakeHook("knowledge_query", evt.PubKey.Hex())
-}
-
-func (n *AgentNode) handleTaskRequestEvent(evt nostr.Event) {
 	targetTag := evt.Tags.Find("p")
 	if targetTag == nil || len(targetTag) < 2 || targetTag[1] != n.NodeID() {
 		return
@@ -121,6 +108,7 @@ func (n *AgentNode) handleTaskRequestEvent(evt nostr.Event) {
 	if reqTag == nil || len(reqTag) < 2 {
 		return
 	}
+	reqID := reqTag[1]
 	fromTag := evt.Tags.Find("from")
 	if fromTag == nil || len(fromTag) < 2 {
 		return
@@ -129,10 +117,24 @@ func (n *AgentNode) handleTaskRequestEvent(evt nostr.Event) {
 	if _, err := nostr.PubKeyFromHex(requester); err != nil {
 		return
 	}
+	if requester != evt.PubKey.Hex() {
+		return
+	}
+	if n.IsBlockedPeer(requester) {
+		return
+	}
 
 	n.mu.Lock()
 	n.knownPeers[requester] = struct{}{}
 	n.mu.Unlock()
+
+	_ = n.publishTaskResponse(requester, reqID, responsePayloadWithReceipt(
+		ReceiptStageAccepted,
+		reqID,
+		"",
+		"request accepted for processing",
+		nil,
+	))
 
 	respPayload, handled := n.dispatchMessageHandler(n.ctx, MessageRequest{
 		Requester: requester,
@@ -140,25 +142,35 @@ func (n *AgentNode) handleTaskRequestEvent(evt nostr.Event) {
 		Event:     evt,
 	})
 	if !handled {
+		detail := "no handler found for message type"
+		if m, ok := respPayload["error"]; ok {
+			if s, ok := m.(string); ok && s != "" {
+				detail = s
+			}
+		}
+		_ = n.publishTaskResponse(requester, reqID, responsePayloadWithReceipt(
+			ReceiptStageFailed,
+			reqID,
+			"request_rejected",
+			detail,
+			nil,
+		))
 		return
 	}
 
-	resp := AgentMessage{
-		Type:      MessageTypeResponse,
-		Payload:   respPayload,
-		Sender:    n.NodeID(),
-		Timestamp: time.Now().UnixMilli(),
-	}
-
-	tags := nostr.Tags{
-		nostr.Tag{"p", requester},
-		nostr.Tag{"req", reqTag[1]},
-		nostr.Tag{"from", n.NodeID()},
-	}
-	_ = n.publishJSONEvent(KindTaskResponse, tags, resp)
+	_ = n.publishTaskResponse(requester, reqID, responsePayloadWithReceipt(
+		ReceiptStageProcessed,
+		reqID,
+		"",
+		"request processed",
+		respPayload,
+	))
 }
 
 func (n *AgentNode) handleTaskResponseEvent(evt nostr.Event) {
+	if n.IsBlockedPeer(evt.PubKey.Hex()) {
+		return
+	}
 	targetTag := evt.Tags.Find("p")
 	if targetTag == nil || len(targetTag) < 2 || targetTag[1] != n.NodeID() {
 		return
@@ -184,4 +196,25 @@ func (n *AgentNode) handleTaskResponseEvent(evt nostr.Event) {
 	case ch <- msg:
 	default:
 	}
+}
+
+func (n *AgentNode) publishTaskResponse(requester string, reqID string, payload interface{}) error {
+	resp := AgentMessage{
+		Type:      MessageTypeResponse,
+		Payload:   payload,
+		Sender:    n.NodeID(),
+		Timestamp: time.Now().UnixMilli(),
+		Meta: &MessageMeta{
+			ReplyTo: reqID,
+			Schema:  SchemaResponseV1,
+			Purpose: "receipt",
+		},
+	}
+
+	tags := nostr.Tags{
+		nostr.Tag{"p", requester},
+		nostr.Tag{"req", reqID},
+		nostr.Tag{"from", n.NodeID()},
+	}
+	return n.publishJSONEvent(KindTaskResponse, tags, resp)
 }

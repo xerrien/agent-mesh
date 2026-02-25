@@ -31,16 +31,16 @@ type MemoryStore struct {
 }
 
 type InboxEvent struct {
-	EventID    string `json:"eventId"`
-	RelayURL   string `json:"relayUrl"`
-	Kind       int    `json:"kind"`
-	Sender     string `json:"sender"`
-	CreatedAt  int64  `json:"createdAt"`
-	ReceivedAt int64  `json:"receivedAt"`
-	ProcessedAt int64 `json:"processedAt"`
+	EventID     string `json:"eventId"`
+	RelayURL    string `json:"relayUrl"`
+	Kind        int    `json:"kind"`
+	Sender      string `json:"sender"`
+	CreatedAt   int64  `json:"createdAt"`
+	ReceivedAt  int64  `json:"receivedAt"`
+	ProcessedAt int64  `json:"processedAt"`
 	ProcessedBy string `json:"processedBy,omitempty"`
-	Content    string `json:"content"`
-	TagsJSON   string `json:"tagsJson"`
+	Content     string `json:"content"`
+	TagsJSON    string `json:"tagsJson"`
 }
 
 func NewMemoryStore(dbPath string, workspacePath string) (*MemoryStore, error) {
@@ -88,6 +88,38 @@ func NewMemoryStore(dbPath string, workspacePath string) (*MemoryStore, error) {
 		relay_url TEXT PRIMARY KEY,
 		last_created_at INTEGER NOT NULL,
 		last_event_id TEXT,
+		updated_at INTEGER NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS mcp_default_rate (
+		id INTEGER PRIMARY KEY CHECK (id = 1),
+		limit_count INTEGER NOT NULL,
+		window_sec INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS mcp_tool_rates (
+		tool TEXT PRIMARY KEY,
+		limit_count INTEGER NOT NULL,
+		window_sec INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS mcp_tool_acl (
+		tool TEXT NOT NULL,
+		pubkey TEXT NOT NULL,
+		updated_at INTEGER NOT NULL,
+		PRIMARY KEY (tool, pubkey)
+	);
+
+	CREATE TABLE IF NOT EXISTS mcp_settings (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS blocked_peers (
+		pubkey TEXT PRIMARY KEY,
 		updated_at INTEGER NOT NULL
 	);
 	`
@@ -407,6 +439,201 @@ func (s *MemoryStore) SaveRelayCursor(relayURL string, lastCreatedAt int64, last
 	return err
 }
 
+func (s *MemoryStore) SaveMCPDefaultRate(limit int, windowSec int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`
+		INSERT INTO mcp_default_rate (id, limit_count, window_sec, updated_at)
+		VALUES (1, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			limit_count = excluded.limit_count,
+			window_sec = excluded.window_sec,
+			updated_at = excluded.updated_at`,
+		limit, windowSec, time.Now().UnixMilli(),
+	)
+	return err
+}
+
+func (s *MemoryStore) GetMCPDefaultRate() (int, int64, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var limit int
+	var windowSec int64
+	err := s.db.QueryRow(`
+		SELECT limit_count, window_sec
+		FROM mcp_default_rate
+		WHERE id = 1`).Scan(&limit, &windowSec)
+	if err == sql.ErrNoRows {
+		return 0, 0, false, nil
+	}
+	if err != nil {
+		return 0, 0, false, err
+	}
+	return limit, windowSec, true, nil
+}
+
+func (s *MemoryStore) SaveMCPToolRate(tool string, limit int, windowSec int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`
+		INSERT INTO mcp_tool_rates (tool, limit_count, window_sec, updated_at)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(tool) DO UPDATE SET
+			limit_count = excluded.limit_count,
+			window_sec = excluded.window_sec,
+			updated_at = excluded.updated_at`,
+		tool, limit, windowSec, time.Now().UnixMilli(),
+	)
+	return err
+}
+
+func (s *MemoryStore) DeleteMCPToolRate(tool string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM mcp_tool_rates WHERE tool = ?`, tool)
+	return err
+}
+
+func (s *MemoryStore) ListMCPToolRates() ([]MCPRatePolicy, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(`
+		SELECT tool, limit_count, window_sec
+		FROM mcp_tool_rates`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]MCPRatePolicy, 0)
+	for rows.Next() {
+		var p MCPRatePolicy
+		if err := rows.Scan(&p.Tool, &p.Limit, &p.WindowSec); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) SaveMCPToolACL(tool string, pubkey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`
+		INSERT OR REPLACE INTO mcp_tool_acl (tool, pubkey, updated_at)
+		VALUES (?, ?, ?)`,
+		tool, pubkey, time.Now().UnixMilli(),
+	)
+	return err
+}
+
+func (s *MemoryStore) DeleteMCPToolACL(tool string, pubkey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM mcp_tool_acl WHERE tool = ? AND pubkey = ?`, tool, pubkey)
+	return err
+}
+
+func (s *MemoryStore) DeleteAllMCPToolACL(tool string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM mcp_tool_acl WHERE tool = ?`, tool)
+	return err
+}
+
+func (s *MemoryStore) ListMCPToolACL() (map[string][]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(`
+		SELECT tool, pubkey
+		FROM mcp_tool_acl`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string][]string)
+	for rows.Next() {
+		var tool string
+		var pubkey string
+		if err := rows.Scan(&tool, &pubkey); err != nil {
+			return nil, err
+		}
+		out[tool] = append(out[tool], pubkey)
+	}
+	return out, nil
+}
+
+func (s *MemoryStore) SaveMCPACLDefaultDeny(defaultDeny bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	value := "0"
+	if defaultDeny {
+		value = "1"
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO mcp_settings (key, value, updated_at)
+		VALUES ('acl_default_deny', ?, ?)
+		ON CONFLICT(key) DO UPDATE SET
+			value = excluded.value,
+			updated_at = excluded.updated_at`,
+		value, time.Now().UnixMilli(),
+	)
+	return err
+}
+
+func (s *MemoryStore) GetMCPACLDefaultDeny() (bool, bool, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var value string
+	err := s.db.QueryRow(`
+		SELECT value
+		FROM mcp_settings
+		WHERE key = 'acl_default_deny'`).Scan(&value)
+	if err == sql.ErrNoRows {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, err
+	}
+	return strings.TrimSpace(value) == "1", true, nil
+}
+
+func (s *MemoryStore) SaveBlockedPeer(pubkey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`
+		INSERT OR REPLACE INTO blocked_peers (pubkey, updated_at)
+		VALUES (?, ?)`,
+		pubkey, time.Now().UnixMilli(),
+	)
+	return err
+}
+
+func (s *MemoryStore) DeleteBlockedPeer(pubkey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, err := s.db.Exec(`DELETE FROM blocked_peers WHERE pubkey = ?`, pubkey)
+	return err
+}
+
+func (s *MemoryStore) ListBlockedPeers() ([]string, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	rows, err := s.db.Query(`SELECT pubkey FROM blocked_peers`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
 // Compress simulates context distillation (e.g., using an LLM).
 // In a real implementation, this would call an LLM to summarize logs.
 func Compress(topic string, rawData interface{}) string {
@@ -428,15 +655,15 @@ func isDuplicateColumnError(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "duplicate column name")
 }
 
-// KnowledgeDiscoveryMsg is sent over Gossipsub to find flexible memory.
-type KnowledgeDiscoveryMsg struct {
-	Query     string   `json:"query"`     // Natural language intent
-	Tags      []string `json:"tags"`      // Optional structured filters
-	Requester string   `json:"requester"` // PeerID
-	Timestamp int64    `json:"timestamp"`
+// Close releases database resources used by the memory store.
+func (s *MemoryStore) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	return s.db.Close()
 }
 
-// KnowledgeOffer is a response to a discovery message.
+// KnowledgeOffer represents an indexed remote capability/knowledge result.
 type KnowledgeOffer struct {
 	TopicHash string  `json:"topicHash"`
 	Topic     string  `json:"topic"`

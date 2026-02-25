@@ -3,29 +3,63 @@ package agent
 const (
 	MessageTypePing           = "ping"
 	MessageTypeMessage        = "message"
-	MessageTypeTask           = "task"
-	MessageTypeProviderLookup = "provider_lookup"
-	MessageTypePeerExchange   = "peer_exchange"
 	MessageTypeResponse       = "response"
+)
+
+const (
+	SchemaPingV1           = "agentmesh.ping.v1"
+	SchemaMessageV1        = "agentmesh.message.v1"
+	SchemaResponseV1       = "agentmesh.response.v1"
+)
+
+const (
+	ReceiptStageAccepted  = "accepted"
+	ReceiptStageProcessed = "processed"
+	ReceiptStageFailed    = "failed"
 )
 
 type AgentCapability struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	MCP         *MCPDescriptor `json:"mcp,omitempty"`
+}
+
+type MCPToolInfo struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+type MCPDescriptor struct {
+	Endpoint   string        `json:"endpoint,omitempty"`
+	SchemaHash string        `json:"schemaHash,omitempty"`
+	Tools      []MCPToolInfo `json:"tools,omitempty"`
+}
+
+type MessageMeta struct {
+	ID          string `json:"id,omitempty"`
+	ReplyTo     string `json:"replyTo,omitempty"`
+	Schema      string `json:"schema,omitempty"`
+	Purpose     string `json:"purpose,omitempty"`
+	TimeoutMs   int64  `json:"timeoutMs,omitempty"`
+	DeadlineMs  int64  `json:"deadlineMs,omitempty"`
+	Priority    int    `json:"priority,omitempty"`
+	RequiresAck bool   `json:"requiresAck,omitempty"`
+}
+
+type MessageReceipt struct {
+	Stage   string `json:"stage"`
+	Code    string `json:"code,omitempty"`
+	Detail  string `json:"detail,omitempty"`
+	At      int64  `json:"at"`
+	ReplyTo string `json:"replyTo,omitempty"`
 }
 
 type AgentMessage struct {
-	Type      string      `json:"type"` // "task", "response", "error"
-	Payload   interface{} `json:"payload"`
-	Sender    string      `json:"sender"`
-	Timestamp int64       `json:"timestamp"`
-}
-
-type PeerHint struct {
-	PubKey      string   `json:"pubkey"`
-	Relays      []string `json:"relays,omitempty"`
-	Capabilities []string `json:"capabilities,omitempty"`
-	LastSeenAt  int64    `json:"lastSeenAt,omitempty"`
+	Type      string       `json:"type"` // "task", "response", "error"
+	Payload   interface{}  `json:"payload"`
+	Sender    string       `json:"sender"`
+	Timestamp int64        `json:"timestamp"`
+	Meta      *MessageMeta `json:"meta,omitempty"`
 }
 
 // SignedPacket contains a signed message for secure discovery.

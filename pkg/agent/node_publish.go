@@ -34,7 +34,7 @@ func (n *AgentNode) publishJSONEvent(kind nostr.Kind, tags nostr.Tags, payload i
 	}
 	n.mu.RLock()
 	sk := n.secretKey
-	relays := append([]*nostr.Relay(nil), n.relays...)
+	relays := append([]relayClient(nil), n.relays...)
 	n.mu.RUnlock()
 	if err := evt.Sign(sk); err != nil {
 		return err
@@ -62,7 +62,7 @@ func (n *AgentNode) publishJSONEventForPeer(kind nostr.Kind, tags nostr.Tags, pa
 	n.mu.RLock()
 	sk := n.secretKey
 	peerRelayURLs := append([]string(nil), n.peerRelays[peerID]...)
-	allRelays := append([]*nostr.Relay(nil), n.relays...)
+	allRelays := append([]relayClient(nil), n.relays...)
 	n.mu.RUnlock()
 
 	if err := evt.Sign(sk); err != nil {
@@ -94,7 +94,7 @@ func (n *AgentNode) publishJSONEventForPeer(kind nostr.Kind, tags nostr.Tags, pa
 	return fmt.Errorf("publish failed on peer relays and fallback relays: %s", strings.Join(combined, "; "))
 }
 
-func (n *AgentNode) publishEventToRelays(evt nostr.Event, relays []*nostr.Relay) (int, []string) {
+func (n *AgentNode) publishEventToRelays(evt nostr.Event, relays []relayClient) (int, []string) {
 	if len(relays) == 0 {
 		return 0, []string{"no connected relays"}
 	}
@@ -104,13 +104,13 @@ func (n *AgentNode) publishEventToRelays(evt nostr.Event, relays []*nostr.Relay)
 	errs := make([]string, 0, len(relays))
 	for _, relay := range relays {
 		wg.Add(1)
-		go func(r *nostr.Relay) {
+		go func(r relayClient) {
 			defer wg.Done()
 			ctx, cancel := context.WithTimeout(n.ctx, 8*time.Second)
 			defer cancel()
 			if err := r.Publish(ctx, evt); err != nil {
 				errMu.Lock()
-				errs = append(errs, fmt.Sprintf("%s: %v", r.URL, err))
+				errs = append(errs, fmt.Sprintf("%s: %v", r.URL(), err))
 				errMu.Unlock()
 				return
 			}
@@ -123,7 +123,7 @@ func (n *AgentNode) publishEventToRelays(evt nostr.Event, relays []*nostr.Relay)
 	return okCount, errs
 }
 
-func splitRelaysByURLs(relays []*nostr.Relay, urls []string) ([]*nostr.Relay, []*nostr.Relay) {
+func splitRelaysByURLs(relays []relayClient, urls []string) ([]relayClient, []relayClient) {
 	if len(relays) == 0 {
 		return nil, nil
 	}
@@ -135,13 +135,13 @@ func splitRelaysByURLs(relays []*nostr.Relay, urls []string) ([]*nostr.Relay, []
 		}
 		allowed[u] = struct{}{}
 	}
-	primary := make([]*nostr.Relay, 0, len(relays))
-	secondary := make([]*nostr.Relay, 0, len(relays))
+	primary := make([]relayClient, 0, len(relays))
+	secondary := make([]relayClient, 0, len(relays))
 	for _, r := range relays {
 		if r == nil {
 			continue
 		}
-		if _, ok := allowed[r.URL]; ok {
+		if _, ok := allowed[r.URL()]; ok {
 			primary = append(primary, r)
 		} else {
 			secondary = append(secondary, r)

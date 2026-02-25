@@ -12,16 +12,15 @@ import (
 )
 
 const (
-	KindCapability      nostr.Kind = 30201
-	KindKnowledgeQuery  nostr.Kind = 9002
-	KindTaskRequest     nostr.Kind = 9003
-	KindTaskResponse    nostr.Kind = 9004
-	identityKeyFileName            = "nostr.key"
-	meshTagName                    = "t"
-	meshTagValue                   = "agentmesh"
-	directMsgEncodingNIP44         = "nip44"
-	capabilityAdvertiseInterval    = 10 * time.Second
-	defaultAdvertiseTTL            = 2 * time.Minute
+	KindCapability              nostr.Kind = 30201
+	KindTaskRequest             nostr.Kind = 9003
+	KindTaskResponse            nostr.Kind = 9004
+	identityKeyFileName                    = "nostr.key"
+	meshTagName                            = "t"
+	meshTagValue                           = "agentmesh"
+	directMsgEncodingNIP44                 = "nip44"
+	capabilityAdvertiseInterval            = 10 * time.Second
+	defaultAdvertiseTTL                    = 2 * time.Minute
 )
 
 type CapabilityCallback func(peerID string, capability AgentCapability)
@@ -50,14 +49,24 @@ type AgentNode struct {
 	reputationChecker ReputationChecker
 	onCapCallbacks    []CapabilityCallback
 	relayURLs         []string
-	relays            []*nostr.Relay
+	relays            []relayClient
+	relayConnect      func(ctx context.Context, url string) (relayClient, error)
 	seenEvents        map[nostr.ID]struct{}
 	knownPeers        map[string]struct{}
 	peerRelays        map[string][]string
+	blockedPeers      map[string]struct{}
 	pendingTasks      map[string]chan AgentMessage
 	capAdvertisers    map[string]context.CancelFunc
 	peerCapabilities  map[string]AgentCapability
 	localCapabilities map[string]AgentCapability
+	mcp               *MCPAdapter
+	mcpToolACL        map[string]map[string]struct{}
+	mcpACLDefaultDeny bool
+	mcpToolRateLimits map[string]mcpRateLimitPolicy
+	mcpRateBuckets    map[string]mcpRateBucket
+	mcpExecCache      map[string]mcpExecutionCache
+	mcpCacheLastGC    time.Time
+	mcpDefaultRate    mcpRateLimitPolicy
 	messageHandlers   map[string]MessageHandler
 	wakeHookCommand   string
 	wakeHookCooldown  time.Duration
@@ -75,23 +84,46 @@ func NewAgentNode(dbPath string, workspacePath string) (*AgentNode, error) {
 	wakeCmd, wakeCooldown, wakeTimeout := loadWakeHookConfig()
 
 	node := &AgentNode{
-		Memory:       store,
-		workspace:    workspacePath,
-		ctx:          ctx,
-		cancel:       cancel,
-		seenEvents:   make(map[nostr.ID]struct{}),
-		knownPeers:   make(map[string]struct{}),
-		peerRelays:   make(map[string][]string),
-		pendingTasks: make(map[string]chan AgentMessage),
-		capAdvertisers:   make(map[string]context.CancelFunc),
-		peerCapabilities: make(map[string]AgentCapability),
+		Memory:            store,
+		workspace:         workspacePath,
+		ctx:               ctx,
+		cancel:            cancel,
+		seenEvents:        make(map[nostr.ID]struct{}),
+		knownPeers:        make(map[string]struct{}),
+		peerRelays:        make(map[string][]string),
+		blockedPeers:      make(map[string]struct{}),
+		pendingTasks:      make(map[string]chan AgentMessage),
+		capAdvertisers:    make(map[string]context.CancelFunc),
+		peerCapabilities:  make(map[string]AgentCapability),
 		localCapabilities: make(map[string]AgentCapability),
+		mcpToolACL:        make(map[string]map[string]struct{}),
+		mcpToolRateLimits: make(map[string]mcpRateLimitPolicy),
+		mcpRateBuckets:    make(map[string]mcpRateBucket),
+		mcpExecCache:      make(map[string]mcpExecutionCache),
+		mcpDefaultRate: mcpRateLimitPolicy{
+			Limit:  30,
+			Window: time.Minute,
+		},
 		messageHandlers:  make(map[string]MessageHandler),
 		wakeHookCommand:  wakeCmd,
 		wakeHookCooldown: wakeCooldown,
 		wakeHookTimeout:  wakeTimeout,
 	}
+	node.relayConnect = func(ctx context.Context, url string) (relayClient, error) {
+		relay, err := nostr.RelayConnect(ctx, url, nostr.RelayOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return &nostrRelayClient{relay: relay}, nil
+	}
+	node.initMCP()
 	node.registerDefaultHandlers()
+	if err := node.loadBlockedPeersFromStore(); err != nil {
+		fmt.Printf("[Blocklist] Load warning: %v\n", err)
+	}
+	if err := node.loadMCPPolicyFromStore(); err != nil {
+		fmt.Printf("[MCP] Policy load warning: %v\n", err)
+	}
 	return node, nil
 }
 
@@ -146,6 +178,75 @@ func (n *AgentNode) ConnectedPeers() []string {
 	return out
 }
 
+func (n *AgentNode) BlockPeer(target string) error {
+	peerID, err := normalizePubKey(target)
+	if err != nil {
+		return err
+	}
+	if n.Memory != nil {
+		if err := n.Memory.SaveBlockedPeer(peerID); err != nil {
+			return err
+		}
+	}
+	n.mu.Lock()
+	n.blockedPeers[peerID] = struct{}{}
+	n.mu.Unlock()
+	return nil
+}
+
+func (n *AgentNode) UnblockPeer(target string) bool {
+	peerID, err := normalizePubKey(target)
+	if err != nil {
+		return false
+	}
+	if n.Memory != nil {
+		_ = n.Memory.DeleteBlockedPeer(peerID)
+	}
+	n.mu.Lock()
+	_, existed := n.blockedPeers[peerID]
+	delete(n.blockedPeers, peerID)
+	n.mu.Unlock()
+	return existed
+}
+
+func (n *AgentNode) BlockedPeers() []string {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	out := make([]string, 0, len(n.blockedPeers))
+	for p := range n.blockedPeers {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (n *AgentNode) IsBlockedPeer(peerID string) bool {
+	n.mu.RLock()
+	defer n.mu.RUnlock()
+	_, blocked := n.blockedPeers[peerID]
+	return blocked
+}
+
+func (n *AgentNode) loadBlockedPeersFromStore() error {
+	if n.Memory == nil {
+		return nil
+	}
+	peers, err := n.Memory.ListBlockedPeers()
+	if err != nil {
+		return err
+	}
+	n.mu.Lock()
+	for _, p := range peers {
+		pk := strings.TrimSpace(strings.ToLower(p))
+		if pk == "" {
+			continue
+		}
+		n.blockedPeers[pk] = struct{}{}
+	}
+	n.mu.Unlock()
+	return nil
+}
+
 func (n *AgentNode) Start(_ string, bootstrapNodes string) error {
 	sk, err := n.loadOrCreateKey()
 	if err != nil {
@@ -164,7 +265,7 @@ func (n *AgentNode) Start(_ string, bootstrapNodes string) error {
 	n.mu.Unlock()
 
 	for _, url := range relayURLs {
-		relay, err := nostr.RelayConnect(n.ctx, url, nostr.RelayOptions{})
+		relay, err := n.relayConnect(n.ctx, url)
 		if err != nil {
 			fmt.Printf("[Nostr] Relay connect failed %s: %v\n", url, err)
 			continue
@@ -196,18 +297,21 @@ func (n *AgentNode) Stop() error {
 	}
 	n.mu.Unlock()
 	n.mu.RLock()
-	relays := append([]*nostr.Relay(nil), n.relays...)
+	relays := append([]relayClient(nil), n.relays...)
 	n.mu.RUnlock()
 	for _, r := range relays {
 		r.Close()
 	}
+	if n.Memory != nil {
+		return n.Memory.Close()
+	}
 	return nil
 }
 
-func (n *AgentNode) Relays() []*nostr.Relay {
+func (n *AgentNode) Relays() []relayClient {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	out := make([]*nostr.Relay, len(n.relays))
+	out := make([]relayClient, len(n.relays))
 	copy(out, n.relays)
 	return out
 }
@@ -293,6 +397,9 @@ func (n *AgentNode) publishCapability(capability AgentCapability, ethAddress str
 		return fmt.Errorf("capability name cannot be empty")
 	}
 	capability.Name = name
+	if capability.MCP == nil && n.mcp != nil {
+		capability.MCP = n.mcp.Descriptor()
+	}
 	payload := map[string]interface{}{
 		"capability": capability,
 		"ethAddress": ethAddress,
@@ -308,10 +415,6 @@ func (n *AgentNode) publishCapability(capability AgentCapability, ethAddress str
 		n.mu.Unlock()
 	}
 	return err
-}
-
-func (n *AgentNode) PublishKnowledgeQuery(query KnowledgeDiscoveryMsg) error {
-	return n.publishJSONEvent(KindKnowledgeQuery, nil, query)
 }
 
 func (n *AgentNode) seen(id nostr.ID) bool {

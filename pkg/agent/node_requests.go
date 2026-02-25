@@ -3,19 +3,39 @@ package agent
 import (
 	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
 	"fiatjaf.com/nostr"
 )
 
-func (n *AgentNode) SendTask(ctx context.Context, target string, payload interface{}) (interface{}, error) {
+func (n *AgentNode) SendTyped(ctx context.Context, target string, msgType string, payload interface{}) (interface{}, error) {
+	msgType = strings.TrimSpace(strings.ToLower(msgType))
+	if msgType == "" {
+		return nil, fmt.Errorf("message type cannot be empty")
+	}
+	schema, ok := schemaForMessageType(msgType)
+	if !ok {
+		return nil, fmt.Errorf("unsupported message type: %s", msgType)
+	}
+	switch msgType {
+	case MessageTypeMessage:
+		peerID, err := normalizePubKey(target)
+		if err != nil {
+			return nil, err
+		}
+		ciphertextPayload, err := n.normalizeEncryptedMessagePayload(peerID, payload)
+		if err != nil {
+			return nil, err
+		}
+		payload = ciphertextPayload
+	}
 	msg := AgentMessage{
-		Type:      MessageTypeTask,
+		Type:      msgType,
 		Payload:   payload,
 		Sender:    n.NodeID(),
 		Timestamp: time.Now().UnixMilli(),
+		Meta:      defaultMessageMeta(schema, msgType, 30000),
 	}
 	return n.sendRequest(ctx, target, msg)
 }
@@ -26,17 +46,10 @@ func (n *AgentNode) PingPeer(ctx context.Context, target string) error {
 		Payload:   map[string]interface{}{"probe": "connect"},
 		Sender:    n.NodeID(),
 		Timestamp: time.Now().UnixMilli(),
+		Meta:      defaultMessageMeta(SchemaPingV1, "connectivity_probe", 20000),
 	}
 	if _, err := n.sendRequest(ctx, target, msg); err != nil {
-		legacy := AgentMessage{
-			Type:      MessageTypeTask,
-			Payload:   map[string]interface{}{"probe": "connect"},
-			Sender:    n.NodeID(),
-			Timestamp: time.Now().UnixMilli(),
-		}
-		if _, legacyErr := n.sendRequest(ctx, target, legacy); legacyErr != nil {
-			return fmt.Errorf("peer did not acknowledge ping or legacy task probe: %w", err)
-		}
+		return fmt.Errorf("peer did not acknowledge ping: %w", err)
 	}
 	peerID, err := normalizePubKey(target)
 	if err != nil {
@@ -46,91 +59,6 @@ func (n *AgentNode) PingPeer(ctx context.Context, target string) error {
 	n.knownPeers[peerID] = struct{}{}
 	n.mu.Unlock()
 	return nil
-}
-
-func (n *AgentNode) SendMessage(ctx context.Context, target string, text string) (interface{}, error) {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil, fmt.Errorf("message cannot be empty")
-	}
-	peerID, err := normalizePubKey(target)
-	if err != nil {
-		return nil, err
-	}
-	ciphertext, err := n.encryptForPeer(peerID, text)
-	if err != nil {
-		return nil, err
-	}
-	msg := AgentMessage{
-		Type:      MessageTypeMessage,
-		Payload:   map[string]interface{}{"encoding": directMsgEncodingNIP44, "ciphertext": ciphertext},
-		Sender:    n.NodeID(),
-		Timestamp: time.Now().UnixMilli(),
-	}
-	return n.sendRequest(ctx, peerID, msg)
-}
-
-func (n *AgentNode) QueryPeerForTaskProviders(ctx context.Context, target string, task string) ([]string, error) {
-	task = strings.TrimSpace(task)
-	if task == "" {
-		return nil, fmt.Errorf("task cannot be empty")
-	}
-	msg := AgentMessage{
-		Type:      MessageTypeProviderLookup,
-		Payload:   map[string]interface{}{"task": task},
-		Sender:    n.NodeID(),
-		Timestamp: time.Now().UnixMilli(),
-	}
-	resp, err := n.sendRequest(ctx, target, msg)
-	if err != nil {
-		return nil, err
-	}
-	return extractProviderList(resp), nil
-}
-
-func (n *AgentNode) QueryKnownPeersForTaskProviders(ctx context.Context, task string) ([]string, error) {
-	task = strings.TrimSpace(task)
-	if task == "" {
-		return nil, fmt.Errorf("task cannot be empty")
-	}
-	peers := n.ConnectedPeers()
-	unique := make(map[string]struct{})
-	for _, peer := range peers {
-		providers, err := n.QueryPeerForTaskProviders(ctx, peer, task)
-		if err != nil {
-			continue
-		}
-		for _, p := range providers {
-			unique[p] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(unique))
-	for p := range unique {
-		out = append(out, p)
-	}
-	sort.Strings(out)
-	return out, nil
-}
-
-func (n *AgentNode) RequestPeerExchange(ctx context.Context, target string, limit int) ([]PeerHint, error) {
-	if limit <= 0 {
-		limit = 64
-	}
-	msg := AgentMessage{
-		Type: MessageTypePeerExchange,
-		Payload: map[string]interface{}{
-			"limit": limit,
-		},
-		Sender:    n.NodeID(),
-		Timestamp: time.Now().UnixMilli(),
-	}
-	resp, err := n.sendRequest(ctx, target, msg)
-	if err != nil {
-		return nil, err
-	}
-	peers := extractPeerHints(resp)
-	n.ingestPeerHints(peers)
-	return peers, nil
 }
 
 func (n *AgentNode) InboxEvents(limit int) ([]InboxEvent, error) {
@@ -150,9 +78,12 @@ func (n *AgentNode) sendRequest(ctx context.Context, target string, msg AgentMes
 	if err != nil {
 		return nil, err
 	}
+	if n.IsBlockedPeer(peerID) {
+		return nil, fmt.Errorf("peer is blocked: %s", peerID)
+	}
 	reqID := nostr.Generate().Hex()
 
-	respCh := make(chan AgentMessage, 1)
+	respCh := make(chan AgentMessage, 4)
 	n.mu.Lock()
 	n.pendingTasks[reqID] = respCh
 	n.mu.Unlock()
@@ -161,6 +92,22 @@ func (n *AgentNode) sendRequest(ctx context.Context, target string, msg AgentMes
 		delete(n.pendingTasks, reqID)
 		n.mu.Unlock()
 	}()
+
+	if msg.Meta == nil {
+		msg.Meta = &MessageMeta{}
+	}
+	if strings.TrimSpace(msg.Meta.ID) == "" {
+		msg.Meta.ID = reqID
+	}
+	if msg.Meta.RequiresAck == false {
+		msg.Meta.RequiresAck = true
+	}
+	if err := validateMessageSchema(msg); err != nil {
+		return nil, err
+	}
+	if err := validateMessagePayload(msg); err != nil {
+		return nil, err
+	}
 
 	tags := nostr.Tags{
 		nostr.Tag{"p", peerID},
@@ -171,14 +118,32 @@ func (n *AgentNode) sendRequest(ctx context.Context, target string, msg AgentMes
 		return nil, err
 	}
 
-	select {
-	case resp := <-respCh:
-		n.mu.Lock()
-		n.knownPeers[peerID] = struct{}{}
-		n.mu.Unlock()
-		return resp.Payload, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	for {
+		select {
+		case resp := <-respCh:
+			n.mu.Lock()
+			n.knownPeers[peerID] = struct{}{}
+			n.mu.Unlock()
+			stage, receipt := extractReceipt(resp.Payload)
+			switch stage {
+			case ReceiptStageAccepted:
+				continue
+			case ReceiptStageFailed:
+				if receipt != nil && receipt.Detail != "" {
+					return nil, fmt.Errorf("request failed: %s", receipt.Detail)
+				}
+				if receipt != nil && receipt.Code != "" {
+					return nil, fmt.Errorf("request failed: %s", receipt.Code)
+				}
+				return nil, fmt.Errorf("request failed")
+			case ReceiptStageProcessed:
+				return unwrapResponsePayload(resp.Payload), nil
+			default:
+				return nil, fmt.Errorf("invalid response: missing receipt stage")
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 }
 
@@ -186,6 +151,12 @@ func (n *AgentNode) dispatchMessageHandler(ctx context.Context, req MessageReque
 	msgType := strings.TrimSpace(strings.ToLower(req.Message.Type))
 	if msgType == "" {
 		return nil, false
+	}
+	if err := validateMessageSchema(req.Message); err != nil {
+		return map[string]interface{}{"error": err.Error()}, false
+	}
+	if err := validateMessagePayload(req.Message); err != nil {
+		return map[string]interface{}{"error": err.Error()}, false
 	}
 	n.mu.RLock()
 	handler := n.messageHandlers[msgType]
@@ -195,7 +166,7 @@ func (n *AgentNode) dispatchMessageHandler(ctx context.Context, req MessageReque
 	}
 	resp, ok := handler(ctx, req)
 	if !ok {
-		return nil, false
+		return resp, false
 	}
 	if resp == nil {
 		resp = make(map[string]interface{})
@@ -216,9 +187,34 @@ func (n *AgentNode) registerDefaultHandlers() {
 		}, true
 	})
 
-	_ = n.RegisterHandler(MessageTypeMessage, func(_ context.Context, req MessageRequest) (map[string]interface{}, bool) {
+	_ = n.RegisterHandler(MessageTypeMessage, func(ctx context.Context, req MessageRequest) (map[string]interface{}, bool) {
 		if text, ok := n.extractMessageTextForSender(req.Requester, req.Message.Payload); ok {
 			fmt.Printf("[Message] %s: %s\n", req.Requester, text)
+			tool, args, invoke, parseErr := parseMCPInvocation(text)
+			if parseErr != nil {
+				return map[string]interface{}{"error": parseErr.Error()}, false
+			}
+			if invoke {
+				if args == nil {
+					args = map[string]interface{}{}
+				}
+				if _, exists := args["sender"]; !exists {
+					args["sender"] = req.Requester
+				}
+				reqID := mcpRequestID(req)
+				result, deduped, err := n.executeMCPToolForRequest(ctx, req.Requester, reqID, tool, args)
+				if err != nil {
+					return map[string]interface{}{"error": err.Error()}, false
+				}
+				n.triggerWakeHook("message", req.Requester)
+				return map[string]interface{}{
+					"type":      "mcp_result",
+					"tool":      tool,
+					"requestId": reqID,
+					"deduped":   deduped,
+					"result":    result,
+				}, true
+			}
 		}
 		n.triggerWakeHook("message", req.Requester)
 		return map[string]interface{}{
@@ -226,35 +222,13 @@ func (n *AgentNode) registerDefaultHandlers() {
 			"message": "delivered",
 		}, true
 	})
+}
 
-	_ = n.RegisterHandler(MessageTypeProviderLookup, func(_ context.Context, req MessageRequest) (map[string]interface{}, bool) {
-		task, ok := extractTaskLookup(req.Message.Payload)
-		if !ok {
-			return nil, false
-		}
-		n.triggerWakeHook("provider_lookup", req.Requester)
-		return map[string]interface{}{
-			"type":      "providers",
-			"task":      task,
-			"providers": n.findProvidersForTask(task),
-		}, true
-	})
-
-	_ = n.RegisterHandler(MessageTypeTask, func(_ context.Context, req MessageRequest) (map[string]interface{}, bool) {
-		n.triggerWakeHook("task", req.Requester)
-		return map[string]interface{}{
-			"type":    MessageTypeTask,
-			"message": "Task processed successfully",
-		}, true
-	})
-
-	_ = n.RegisterHandler(MessageTypePeerExchange, func(_ context.Context, req MessageRequest) (map[string]interface{}, bool) {
-		limit := extractPositiveInt(req.Message.Payload, "limit", 64, 256)
-		peerHints := n.buildPeerHints(limit)
-		return map[string]interface{}{
-			"type":  MessageTypePeerExchange,
-			"count": len(peerHints),
-			"peers": peerHints,
-		}, true
-	})
+func defaultMessageMeta(schema string, purpose string, timeoutMs int64) *MessageMeta {
+	return &MessageMeta{
+		Schema:      schema,
+		Purpose:     purpose,
+		TimeoutMs:   timeoutMs,
+		RequiresAck: true,
+	}
 }
