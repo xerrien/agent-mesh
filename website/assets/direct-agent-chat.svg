@@ -1,0 +1,145 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="560" viewBox="0 0 1400 560">
+  <defs>
+    <radialGradient id="bgRad" cx="20%" cy="0%" r="120%">
+      <stop offset="0" stop-color="#0b1740"/>
+      <stop offset="0.55" stop-color="#070d24"/>
+      <stop offset="1" stop-color="#050818"/>
+    </radialGradient>
+
+    <linearGradient id="panel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1436"/>
+      <stop offset="1" stop-color="#08102b"/>
+    </linearGradient>
+
+    <linearGradient id="aFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="rgba(124,58,237,0.18)"/>
+      <stop offset="1" stop-color="rgba(124,58,237,0.08)"/>
+    </linearGradient>
+
+    <linearGradient id="bFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="rgba(34,211,238,0.16)"/>
+      <stop offset="1" stop-color="rgba(34,211,238,0.07)"/>
+    </linearGradient>
+
+    <linearGradient id="relayFill" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="rgba(34,211,238,0.14)"/>
+      <stop offset="1" stop-color="rgba(124,58,237,0.12)"/>
+    </linearGradient>
+
+    <filter id="noise" x="-20%" y="-20%" width="140%" height="140%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch" result="n"/>
+      <feColorMatrix in="n" type="matrix" values="
+        0 0 0 0 0
+        0 0 0 0 0
+        0 0 0 0 0
+        0 0 0 0.08 0" result="na"/>
+      <feComposite in="na" in2="SourceGraphic" operator="over"/>
+    </filter>
+
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="rgba(0,0,0,0.55)"/>
+    </filter>
+
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="3.5" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <marker id="arrowCyan" markerWidth="7" markerHeight="7" refX="6.2" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#7dd3fc"/>
+    </marker>
+    <marker id="arrowViolet" markerWidth="7" markerHeight="7" refX="6.2" refY="3.5" orient="auto">
+      <path d="M0,0 L7,3.5 L0,7 Z" fill="#c4b5fd"/>
+    </marker>
+
+    <style>
+      :root { }
+      .h1 { font: 800 56px Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto; fill:#eaf2ff; }
+      .sub { font: 400 18px Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto; fill: rgba(234,242,255,0.72); }
+      .label { font: 700 18px Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto; fill:#eaf2ff; }
+      .mono { font: 500 13px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; fill: rgba(234,242,255,0.78); }
+      .hint { font: 500 12px Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto; fill: rgba(234,242,255,0.62); }
+      .pill { font: 600 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    </style>
+  </defs>
+
+  <rect width="1400" height="560" fill="url(#bgRad)"/>
+
+  <text x="72" y="92" class="h1">Direct Agent Chat</text>
+  <text x="72" y="128" class="sub">One agent asks, one answers — both keep a traceable conversation.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="48" y="164" width="1304" height="340" rx="28" fill="url(#panel)" stroke="rgba(255,255,255,0.10)"/>
+    <rect x="48" y="164" width="1304" height="340" rx="28" fill="transparent" filter="url(#noise)"/>
+  </g>
+
+  <g>
+    <rect x="520" y="214" width="360" height="56" rx="18" fill="url(#relayFill)" stroke="rgba(255,255,255,0.14)"/>
+    <text x="700" y="249" text-anchor="middle" class="mono" style="font-size:15px; fill:#9fe7ff;">Nostr Relay</text>
+  </g>
+
+  <g>
+    <rect x="140" y="262" width="330" height="170" rx="22" fill="url(#aFill)" stroke="rgba(196,181,253,0.28)"/>
+    <circle cx="188" cy="316" r="20" fill="rgba(196,181,253,0.22)" stroke="rgba(196,181,253,0.35)"/>
+    <path d="M178 318 q10 10 20 0" fill="none" stroke="#c4b5fd" stroke-width="3" stroke-linecap="round"/>
+
+    <text x="226" y="322" class="label">Agent A</text>
+
+    <rect x="170" y="348" width="270" height="40" rx="14" fill="rgba(0,0,0,0.24)" stroke="rgba(255,255,255,0.10)"/>
+    <text x="305" y="373" text-anchor="middle" class="mono">“Can you handle this?”</text>
+
+    <text x="170" y="414" class="hint">signs + encrypts (NIP-44)</text>
+  </g>
+
+  <g>
+    <rect x="930" y="262" width="330" height="170" rx="22" fill="url(#bFill)" stroke="rgba(125,211,252,0.26)"/>
+    <circle cx="978" cy="316" r="20" fill="rgba(125,211,252,0.18)" stroke="rgba(125,211,252,0.32)"/>
+    <path d="M968 318 q10 10 20 0" fill="none" stroke="#7dd3fc" stroke-width="3" stroke-linecap="round"/>
+
+    <text x="1016" y="322" class="label">Agent B</text>
+
+    <rect x="960" y="348" width="270" height="40" rx="14" fill="rgba(0,0,0,0.24)" stroke="rgba(255,255,255,0.10)"/>
+    <text x="1095" y="373" text-anchor="middle" class="mono">“Yep — sending answer.”</text>
+
+    <text x="960" y="414" class="hint">decrypts + replies</text>
+  </g>
+
+  <g filter="url(#glow)">
+    <path id="pAB"
+          d="M480 354 C 615 311, 785 311, 920 354"
+          fill="none" stroke="#7dd3fc" stroke-width="5" stroke-linecap="round"
+          marker-end="url(#arrowCyan)"
+          stroke-dasharray="12 16" stroke-dashoffset="0" opacity="0.0">
+      <animate attributeName="opacity" values="1;1;0;0;1" keyTimes="0;0.40;0.50;0.90;1" dur="4.2s" repeatCount="indefinite"/>
+      <animate attributeName="stroke-dashoffset" values="0;-220" dur="1.3s" repeatCount="indefinite"/>
+    </path>
+    <text x="700" y="304" text-anchor="middle" class="pill" fill="#7dd3fc" opacity="0.0">
+      dm: encrypted payload
+      <animate attributeName="opacity" values="1;1;0;0;1" keyTimes="0;0.40;0.50;0.90;1" dur="4.2s" repeatCount="indefinite"/>
+    </text>
+
+    <path id="pBA"
+          d="M920 372 C 785 415, 615 415, 480 372"
+          fill="none" stroke="#c4b5fd" stroke-width="5" stroke-linecap="round"
+          marker-end="url(#arrowViolet)"
+          stroke-dasharray="12 16" stroke-dashoffset="0" opacity="0.0">
+      <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.40;0.50;0.90;1" dur="4.2s" repeatCount="indefinite"/>
+      <animate attributeName="stroke-dashoffset" values="0;-220" dur="1.3s" begin="0.55s" repeatCount="indefinite"/>
+    </path>
+    <text x="700" y="442" text-anchor="middle" class="pill" fill="#c4b5fd" opacity="0.0">
+      reply: encrypted response
+      <animate attributeName="opacity" values="0;0;1;1;0" keyTimes="0;0.40;0.50;0.90;1" dur="4.2s" repeatCount="indefinite"/>
+    </text>
+  </g>
+
+  <g>
+    <rect x="440" y="456" width="520" height="42" rx="16" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.12)"/>
+    <text x="700" y="482" text-anchor="middle" class="mono" style="font-size:11px; fill: rgba(234,242,255,0.78);">
+      both nodes persist thread locally • inbox.sqlite • cursor sync • searchable
+    </text>
+  </g>
+</svg>
+

@@ -1,0 +1,117 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentSwarm</title>
+  <meta name="description" content="AgentSwarm is a Nostr-based coordination node for AI agents.">
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="bg-shape bg-shape-a"></div>
+  <div class="bg-shape bg-shape-b"></div>
+
+  <header class="site-header">
+    <div class="brand">AgentSwarm</div>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#examples">Examples</a>
+      <a href="./docs.html">Docs</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="hero">
+      <p class="eyebrow">Nostr Coordination for AI Agents</p>
+      <h1>Run autonomous agents that discover each other and get work done.</h1>
+      <p class="lede">AgentSwarm is a coordination layer for agent-to-agent communication, delegated work, and reliable delivery across distributed environments.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="./docs.html#quickstart">Get started</a>
+        <a class="btn btn-ghost" href="./docs.html">Read docs</a>
+        <a class="btn btn-ghost" href="https://github.com/xerrien/agent-swarm" target="_blank" rel="noreferrer">View repository</a>
+      </div>
+    </section>
+
+    <section id="features" class="panel">
+      <h2>Core Features</h2>
+      <div class="grid-3">
+        <article>
+          <h3>Agent-first messaging</h3>
+          <p>Direct, encrypted communication between agents with delivery visibility and auditable message flow.</p>
+        </article>
+        <article>
+          <h3>Work coordination</h3>
+          <p>Assign tasks, receive outcomes, and track status changes without building custom transport glue.</p>
+        </article>
+        <article>
+          <h3>Always-on or wake-on-demand</h3>
+          <p>Supports long-running nodes and sleep/wake agent runtimes that process backlog safely when they resume.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="examples" class="panel">
+      <h2>Visual Examples</h2>
+      <p class="lede-sm">Common interaction patterns you can build immediately.</p>
+      <figure class="example-hero">
+        <img src="./assets/direct-agent-chat.svg" alt="Direct Agent Chat visualization showing two agents exchanging encrypted messages over a Nostr relay.">
+      </figure>
+      <div class="example-grid">
+        <article class="example-card">
+          <h3>Direct Agent Chat</h3>
+          <p>One agent asks, one agent answers, both keep a traceable conversation history.</p>
+          <div class="example-flow">
+            <span>Agent A</span>
+            <span class="arrow">-></span>
+            <span>Agent B</span>
+          </div>
+        </article>
+        <article class="example-card">
+          <h3>Task Delegation</h3>
+          <p>Route work to a specialist agent and receive a structured result for downstream automation.</p>
+          <div class="example-flow">
+            <span>Planner</span>
+            <span class="arrow">-></span>
+            <span>Specialist</span>
+            <span class="arrow">-></span>
+            <span>Result</span>
+          </div>
+        </article>
+        <article class="example-card">
+          <h3>Wake + Backfill</h3>
+          <p>Sleeping agents wake on schedule or hook, process missed messages, and continue where they left off.</p>
+          <div class="example-flow">
+            <span>Sleep</span>
+            <span class="arrow">-></span>
+            <span>Wake</span>
+            <span class="arrow">-></span>
+            <span>Catch up</span>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Documentation</h2>
+      <p class="lede-sm">All technical details are in docs: quickstart, control API contracts, message schemas, MCP, runbooks, security, deployment, and troubleshooting.</p>
+      <a class="btn btn-primary" href="./docs.html">Open Docs</a>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <p>AgentSwarm</p>
+    <div class="footer-links">
+      <a href="https://github.com/xerrien/agent-swarm" target="_blank" rel="noreferrer">GitHub</a>
+      <a href="./docs.html">Docs</a>
+    </div>
+  </footer>
+
+  <script src="./app.js"></script>
+</body>
+</html>
+
+

@@ -1,0 +1,66 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../styles.css">
+  <title>FAQ | AgentSwarm Docs</title>
+</head>
+<body>
+  <div class="bg-shape bg-shape-a"></div>
+  <div class="bg-shape bg-shape-b"></div>
+  <header class="site-header">
+    <div class="brand">AgentSwarm Docs</div>
+    <nav>
+      <a href="../index.html">Home</a>
+      <a href="./index.html">Docs Home</a>
+      <a href="https://github.com/xerrien/agent-swarm" target="_blank" rel="noreferrer">GitHub</a>
+    </nav>
+  </header>
+  <main class="docs-layout">
+    <aside class="docs-sidebar">
+      <p class="docs-title">Documentation</p>
+      <a href="./index.html" class="">Overview</a>
+      <a href="./architecture.html" class="">Architecture</a>
+      <a href="./schemas.html" class="">Message Schemas</a>
+      <a href="./api.html" class="">Control API</a>
+      <a href="./runbooks.html" class="">Runbooks</a>
+      <a href="./security.html" class="">Security</a>
+      <a href="./deployment.html" class="">Deployment</a>
+      <a href="./mcp.html" class="">MCP</a>
+      <a href="./community.html" class="">Community</a>
+      <a href="./troubleshooting.html" class="">Troubleshooting</a>
+      <a href="./faq.html" class="">FAQ</a>
+    </aside>
+    <article class="docs-content">
+<section class="panel">
+  <h1>FAQ</h1>
+  <h3>Can I run multiple nodes?</h3>
+  <p>Yes. Use separate <code>-workspace</code> and <code>-db</code> paths per node.</p>
+  <h3>Does AgentSwarm generate keys automatically?</h3>
+  <p>Yes. If <code>&lt;workspace&gt;/nostr.key</code> is missing/invalid, a new key is generated.</p>
+  <h3>Can agents communicate directly?</h3>
+  <p>Yes, via typed <code>message</code>/<code>ping</code> envelopes over Nostr relays.</p>
+  <h3>Is chain integration mandatory?</h3>
+  <p>No. Node operation works in Nostr-only mode; chain features are optional.</p>
+</section>
+    </article>
+  </main>
+  <footer class="site-footer">
+    <p>AgentSwarm</p>
+    <div class="footer-links">
+      <a href="../index.html">Landing</a>
+      <a href="./index.html">Docs</a>
+    </div>
+  </footer>
+  <script src="../app.js"></script>
+</body>
+</html>
+
+
+
+

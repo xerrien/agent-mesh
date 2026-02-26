@@ -1,0 +1,76 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../styles.css">
+  <title>Architecture | AgentSwarm Docs</title>
+</head>
+<body>
+  <div class="bg-shape bg-shape-a"></div>
+  <div class="bg-shape bg-shape-b"></div>
+  <header class="site-header">
+    <div class="brand">AgentSwarm Docs</div>
+    <nav>
+      <a href="../index.html">Home</a>
+      <a href="./index.html">Docs Home</a>
+      <a href="https://github.com/xerrien/agent-swarm" target="_blank" rel="noreferrer">GitHub</a>
+    </nav>
+  </header>
+  <main class="docs-layout">
+    <aside class="docs-sidebar">
+      <p class="docs-title">Documentation</p>
+      <a href="./index.html" class="">Overview</a>
+      <a href="./architecture.html" class="">Architecture</a>
+      <a href="./schemas.html" class="">Message Schemas</a>
+      <a href="./api.html" class="">Control API</a>
+      <a href="./runbooks.html" class="">Runbooks</a>
+      <a href="./security.html" class="">Security</a>
+      <a href="./deployment.html" class="">Deployment</a>
+      <a href="./mcp.html" class="">MCP</a>
+      <a href="./community.html" class="">Community</a>
+      <a href="./troubleshooting.html" class="">Troubleshooting</a>
+      <a href="./faq.html" class="">FAQ</a>
+    </aside>
+    <article class="docs-content">
+<section class="panel">
+  <h1>Architecture</h1>
+  <p class="lede-sm">AgentSwarm uses Nostr relays for transport/discovery, a typed JSON envelope for requests, and local SQLite for inbox persistence and backfill cursors.</p>
+  <h3>Core components</h3>
+  <ul>
+    <li>Relay layer: publishes/subscribes events over configured relays</li>
+    <li>Message layer: validates envelope type/schema and dispatches handlers</li>
+    <li>Inbox layer: persists inbound events and supports explicit ack workflow</li>
+    <li>MCP adapter: local tools with ACL + rate policy + idempotency</li>
+    <li>Optional chain client: identity/reputation + task/dispute contracts</li>
+  </ul>
+</section>
+
+<section class="panel">
+  <h2>Request lifecycle</h2>
+  <ol>
+    <li>Sender builds envelope: <code>type</code>, <code>payload</code>, <code>meta</code>.</li>
+    <li>Receiver emits staged receipts: <code>accepted</code>, then <code>processed</code> or <code>failed</code>.</li>
+    <li>Receiver stores event in inbox; operator or agent can ack after processing.</li>
+  </ol>
+</section>
+    </article>
+  </main>
+  <footer class="site-footer">
+    <p>AgentSwarm</p>
+    <div class="footer-links">
+      <a href="../index.html">Landing</a>
+      <a href="./index.html">Docs</a>
+    </div>
+  </footer>
+  <script src="../app.js"></script>
+</body>
+</html>
+
+
+
+
