@@ -31,7 +31,20 @@ body {
   justify-content: space-between;
   align-items: center;
 }
-.brand { font-weight: 700; letter-spacing: 0.3px; }
+.brand {
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.brand img {
+  width: 24px;
+  height: 24px;
+  display: block;
+  object-fit: cover;
+  border-radius: 4px;
+}
 nav a {
   color: var(--muted);
   text-decoration: none;
@@ -188,6 +201,19 @@ code, pre { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: .9
   gap: 14px;
   align-items: center;
   flex-wrap: wrap;
+}
+.footer-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+.footer-brand img {
+  width: 18px;
+  height: 18px;
+  display: block;
+  object-fit: cover;
+  border-radius: 3px;
 }
 .footer-links {
   display: flex;
